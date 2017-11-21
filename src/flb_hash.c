@@ -180,6 +180,7 @@ int flb_hash_add(struct flb_hash *ht, char *key, int key_len,
     if (!entry->val) {
         flb_errno();
         flb_free(entry->key);
+        flb_free(entry);
         return -1;
     }
     /*
@@ -239,6 +240,10 @@ int flb_hash_get(struct flb_hash *ht, char *key, int key_len,
         entry = mk_list_entry_first(&table->chains,
                                     struct flb_hash_entry,
                                     _head);
+
+        if (strcmp(entry->key, key) != 0) {
+            entry = NULL;
+        }
     }
     else {
         /* Iterate entries */

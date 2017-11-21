@@ -121,6 +121,8 @@ struct flb_output_instance {
 
 #ifdef FLB_HAVE_TLS
     int tls_verify;                      /* Verify certs (default: true) */
+    int tls_debug;                       /* mbedtls debug level          */
+    char *tls_ca_path;                   /* Path to certificates         */
     char *tls_ca_file;                   /* CA root cert                 */
     char *tls_crt_file;                  /* Certificate                  */
     char *tls_key_file;                  /* Cert Key                     */
@@ -175,6 +177,10 @@ struct flb_output_instance {
 
     struct mk_list properties;           /* properties / configuration   */
     struct mk_list _head;                /* link to config->inputs       */
+
+#ifdef FLB_HAVE_METRICS
+    struct flb_metrics *metrics;         /* metrics                      */
+#endif
 
     /* Keep a reference to the original context this instance belongs to */
     struct flb_config *config;
@@ -413,6 +419,9 @@ static inline void flb_output_return(int ret, struct flb_thread *th) {
     uint64_t val;
     struct flb_task *task;
     struct flb_output_thread *out_th;
+#ifdef FLB_HAVE_METRICS
+    int records;
+#endif
 
     out_th = (struct flb_output_thread *) FLB_THREAD_DATA(th);
     task = out_th->task;
@@ -433,6 +442,27 @@ static inline void flb_output_return(int ret, struct flb_thread *th) {
     if (n == -1) {
         flb_errno();
     }
+
+#ifdef FLB_HAVE_METRICS
+    if (out_th->o_ins->metrics) {
+        if (ret == FLB_OK) {
+            records = flb_mp_count(task->buf, task->size);
+            flb_metrics_sum(FLB_METRIC_OUT_OK_RECORDS, records,
+                            out_th->o_ins->metrics);
+            flb_metrics_sum(FLB_METRIC_OUT_OK_BYTES, task->size,
+                            out_th->o_ins->metrics);
+        }
+        else if (ret == FLB_ERROR) {
+            flb_metrics_sum(FLB_METRIC_OUT_ERROR, 1, out_th->o_ins->metrics);
+        }
+        else if (ret == FLB_RETRY) {
+            /*
+             * Counting retries is happening in the event loop/scheduler side
+             * since it also needs to count if some retry fails to re-schedule.
+             */
+        }
+    }
+#endif
 }
 
 static inline void flb_output_return_do(int x)
@@ -460,6 +490,7 @@ char *flb_output_get_property(char *key, struct flb_output_instance *o_ins);
 void flb_output_pre_run(struct flb_config *config);
 void flb_output_exit(struct flb_config *config);
 void flb_output_set_context(struct flb_output_instance *ins, void *context);
+int flb_output_instance_destroy(struct flb_output_instance *ins);
 int flb_output_init(struct flb_config *config);
 int flb_output_check(struct flb_config *config);
 

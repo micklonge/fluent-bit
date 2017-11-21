@@ -2,7 +2,7 @@
 
 /*  Monkey HTTP Server
  *  ==================
- *  Copyright 2001-2015 Monkey Software LLC <eduardo@monkey.io>
+ *  Copyright 2001-2017 Eduardo Silva <eduardo@monkey.io>
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -153,6 +153,9 @@ struct mk_http_session
      * which is re-used everytime we have a new request.
      */
     struct mk_http_parser parser;
+
+    /* Server context */
+    struct mk_server *server;
 };
 
 static inline int mk_http_status_completed(struct mk_http_session *cs,
@@ -192,7 +195,8 @@ int mk_http_send_file(struct mk_http_session *cs, struct mk_http_request *sr);
 
 /* http session */
 int mk_http_session_init(struct mk_http_session *cs,
-                         struct mk_sched_conn *conn);
+                         struct mk_sched_conn *conn,
+                         struct mk_server *server);
 void mk_http_session_remove(struct mk_http_session *cs,
                             struct mk_server *server);
 

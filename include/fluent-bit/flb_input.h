@@ -30,6 +30,11 @@
 #include <fluent-bit/flb_pipe.h>
 #include <fluent-bit/flb_filter.h>
 #include <fluent-bit/flb_thread.h>
+#include <fluent-bit/flb_mp.h>
+
+#ifdef FLB_HAVE_METRICS
+#include <fluent-bit/flb_metrics.h>
+#endif
 
 #include <monkey/mk_core.h>
 #include <msgpack.h>
@@ -180,6 +185,7 @@ struct flb_input_instance {
     size_t mp_buf_write_size;
     msgpack_packer  mp_pck;
     msgpack_sbuffer mp_sbuf;
+    msgpack_zone  *mp_zone;
 
     /*
      * Buffers counter: it count the total of memory used by fixed and dynamic
@@ -232,6 +238,10 @@ struct flb_input_instance {
     struct mk_list tasks;
 
     struct mk_list threads;              /* engine taskslist           */
+
+#ifdef FLB_HAVE_METRICS
+    struct flb_metrics *metrics;         /* metrics                    */
+#endif
 
     /* Keep a reference to the original context this instance belongs to */
     struct flb_config *config;
@@ -549,6 +559,9 @@ static inline void flb_input_buf_write_end(struct flb_input_instance *i)
 {
     size_t bytes;
     void *buf;
+#ifdef FLB_HAVE_METRICS
+    int records;
+#endif
 
     /* Get the number of new bytes */
     bytes = (i->mp_sbuf.size - i->mp_buf_write_size);
@@ -556,10 +569,18 @@ static inline void flb_input_buf_write_end(struct flb_input_instance *i)
         return;
     }
 
+#ifdef FLB_HAVE_METRICS
+    records = flb_mp_count(i->mp_sbuf.data + i->mp_buf_write_size, bytes);
+    if (records > 0) {
+        flb_metrics_sum(FLB_METRIC_N_RECORDS, records, i->metrics);
+        flb_metrics_sum(FLB_METRIC_N_BYTES, bytes, i->metrics);
+    }
+#endif
+
     if (flb_input_buf_paused(i) == FLB_TRUE) {
         i->mp_sbuf.size = i->mp_buf_write_size;
         flb_debug("[input] %s is paused, cannot append records",
-                 i->name);
+                  i->name);
         return;
     }
 
@@ -590,6 +611,9 @@ static inline void flb_input_dbuf_write_end(struct flb_input_dyntag *dt)
 {
     size_t bytes;
     void *buf;
+#ifdef FLB_HAVE_METRICS
+    int records;
+#endif
     struct flb_input_instance *in = dt->in;
 
     /* Get the number of new bytes */
@@ -604,6 +628,14 @@ static inline void flb_input_dbuf_write_end(struct flb_input_dyntag *dt)
                   in->name);
         return;
     }
+
+#ifdef FLB_HAVE_METRICS
+    records = flb_mp_count(dt->mp_sbuf.data + dt->mp_buf_write_size, bytes);
+    if (records > 0) {
+        flb_metrics_sum(FLB_METRIC_N_RECORDS, records, in->metrics);
+        flb_metrics_sum(FLB_METRIC_N_BYTES, bytes, in->metrics);
+    }
+#endif
 
     /* Call the filter handler */
     buf = dt->mp_sbuf.data + dt->mp_buf_write_size;
@@ -637,6 +669,7 @@ int flb_input_check(struct flb_config *config);
 void flb_input_set_context(struct flb_input_instance *in, void *context);
 int flb_input_channel_init(struct flb_input_instance *in);
 
+int flb_input_collector_start(int coll_id, struct flb_input_instance *in);
 int flb_input_collectors_start(struct flb_config *config);
 int flb_input_collector_pause(int coll_id, struct flb_input_instance *in);
 int flb_input_collector_resume(int coll_id, struct flb_input_instance *in);
@@ -658,6 +691,7 @@ int flb_input_set_collector_socket(struct flb_input_instance *in,
                                                              void*),
                                    flb_pipefd_t fd,
                                    struct flb_config *config);
+int flb_input_collector_running(int coll_id, struct flb_input_instance *in);
 void flb_input_initialize_all(struct flb_config *config);
 void flb_input_pre_run_all(struct flb_config *config);
 void flb_input_exit_all(struct flb_config *config);

@@ -59,6 +59,34 @@ static inline int buf_append(struct flb_buf *buf, char *str, int len)
     return 0;
 }
 
+/* Preset some useful variables */
+static int env_preset(struct flb_env *env)
+{
+    int ret;
+    char *buf;
+    char tmp[512];
+
+    /*
+     * ${HOSTNAME} this variable is very useful to identify records,
+     * despite this variable is recognized by the Shell, that does not
+     * means that is exposed as a real environment variable, e.g:
+     *
+     *  1. $ echo $HOSTNAME
+     *     monotop
+     *  2. $ env | grep HOSTNAME
+     *     (nothing)
+     */
+    buf = getenv("HOSTNAME");
+    if (!buf) {
+        ret = gethostname(tmp, sizeof(tmp) - 1);
+        if (ret == 0) {
+            flb_env_set(env, "HOSTNAME", tmp);
+        }
+    }
+
+    return 0;
+}
+
 struct flb_env *flb_env_create()
 {
     struct flb_env *env;
@@ -78,6 +106,8 @@ struct flb_env *flb_env_create()
     }
 
     env->ht = ht;
+    env_preset(env);
+
     return env;
 }
 
@@ -152,9 +182,9 @@ char *flb_env_var_translate(struct flb_env *env, char *value)
     int e_len;
     int pre_var;
     int have_var = FLB_FALSE;
-    char *env_var;
-    char *v_start;
-    char *v_end;
+    char *env_var = NULL;
+    char *v_start = NULL;
+    char *v_end = NULL;
     char tmp[64];
     struct flb_buf buf;
 
@@ -206,8 +236,10 @@ char *flb_env_var_translate(struct flb_env *env, char *value)
     }
 
     /* Copy the remaining value into our buffer */
-    if (have_var == FLB_TRUE && (value + len) - (v_end + 1) > 0) {
-        buf_append(&buf, v_end + 1, (value + len) - (v_end + 1));
+    if (v_end) {
+        if (have_var == FLB_TRUE && (value + len) - (v_end + 1) > 0) {
+            buf_append(&buf, v_end + 1, (value + len) - (v_end + 1));
+        }
     }
 
     if (buf.len == 0) {

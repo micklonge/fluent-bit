@@ -26,6 +26,7 @@ struct flb_pack_state {
     int multiple;         /* support multiple jsons? */
     int tokens_count;     /* number of parsed tokens */
     int tokens_size;      /* array size of tokens    */
+    int last_byte;        /* last byte of a full msg */
     jsmntok_t *tokens;    /* tokens array            */
     jsmn_parser parser;   /* parser state            */
 };
@@ -40,12 +41,12 @@ int flb_pack_json_state(char *js, size_t len,
 
 void flb_pack_print(char *data, size_t bytes);
 int flb_msgpack_to_json(char *json_str, size_t str_len,
-                        msgpack_unpacked *data);
-int flb_msgpack_obj_to_json(char *json_str, size_t str_len,
-                            msgpack_object *obj);
-char* flb_msgpack_to_json_str(size_t size, msgpack_unpacked *data);
+                        msgpack_object *obj);
+char* flb_msgpack_to_json_str(size_t size, msgpack_object *obj);
 int flb_msgpack_raw_to_json_str(char *buf, size_t buf_size,
                                 char **out_buf, size_t *out_size);
 int flb_pack_time_now(msgpack_packer *pck);
-
+int flb_msgpack_expand_map(char *map_data, size_t map_size,
+                           msgpack_object_kv **obj_arr, int obj_arr_len,
+                           char** out_buf, int* out_size);
 #endif

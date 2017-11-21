@@ -2,7 +2,7 @@
 
 /*  Monkey HTTP Server
  *  ==================
- *  Copyright 2001-2015 Monkey Software LLC <eduardo@monkey.io>
+ *  Copyright 2001-2017 Eduardo Silva <eduardo@monkey.io>
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -89,6 +89,9 @@ struct mk_http_request
     /*-Connection-*/
     long port;
     /*------------*/
+
+    /* Body Stream size */
+    uint64_t stream_size;
 
     /* Streams handling: headers and static file */
     struct mk_stream stream;
@@ -180,6 +183,9 @@ struct mk_http_request
 
     /* Parent Session */
     struct mk_http_session *session;
+
+    /* coroutine thread (if any) */
+    void *thread;
 
     /* Head to list of requests */
     struct mk_list _head;

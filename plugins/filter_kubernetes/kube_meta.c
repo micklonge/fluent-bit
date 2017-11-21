@@ -167,6 +167,8 @@ static int get_api_server_info(struct flb_kube *ctx,
     c = flb_http_client(u_conn, FLB_HTTP_GET,
                         uri,
                         NULL, 0, NULL, 0, NULL, 0);
+    flb_http_buffer_size(c, ctx->buffer_size);
+
     flb_http_add_header(c, "User-Agent", 10, "Fluent-Bit", 10);
     flb_http_add_header(c, "Connection", 10, "close", 5);
     flb_http_add_header(c, "Authorization", 13, ctx->auth, ctx->auth_len);
@@ -177,6 +179,10 @@ static int get_api_server_info(struct flb_kube *ctx,
               namespace, podname, ret, c->resp.status);
 
     if (ret != 0 || c->resp.status != 200) {
+        if (c->resp.payload_size > 0) {
+            flb_debug("[filter_kube] API Server response\n%s",
+                      c->resp.payload);
+        }
         flb_http_client_destroy(c);
         flb_upstream_conn_release(u_conn);
         return -1;
@@ -203,27 +209,42 @@ static int get_api_server_info(struct flb_kube *ctx,
 static void cb_results(unsigned char *name, unsigned char *value,
                        size_t vlen, void *data)
 {
-    int len;
     struct flb_kube_meta *meta = data;
 
     if (meta->podname == NULL && strcmp((char *) name, "pod_name") == 0) {
         meta->podname = flb_strndup((char *) value, vlen);
         meta->podname_len = vlen;
+        meta->fields++;
     }
     else if (meta->namespace == NULL &&
              strcmp((char *) name, "namespace_name") == 0) {
         meta->namespace = flb_strndup((char *) value, vlen);
         meta->namespace_len = vlen;
+        meta->fields++;
+    }
+    else if (meta->container_name == NULL &&
+             strcmp((char *) name, "container_name") == 0) {
+        meta->container_name = flb_strndup((char *) value, vlen);
+        meta->container_name_len = vlen;
+        meta->skip++;
+    }
+    else if (meta->docker_id == NULL &&
+             strcmp((char *) name, "docker_id") == 0) {
+        meta->docker_id = flb_strndup((char *) value, vlen);
+        meta->docker_id_len = vlen;
+        meta->skip++;
+    }
+    else if (meta->container_hash == NULL &&
+             strcmp((char *) name, "container_hash") == 0) {
+        meta->container_hash = flb_strndup((char *) value, vlen);
+        meta->container_hash_len = vlen;
+        meta->skip++;
     }
 
-    len = strlen((char *)name);
-    msgpack_pack_str(&meta->mp_pck, len);
-    msgpack_pack_str_body(&meta->mp_pck, (char *) name, len);
-    msgpack_pack_str(&meta->mp_pck, vlen);
-    msgpack_pack_str_body(&meta->mp_pck, (char *) value, vlen);
+    return;
 }
 
-static int merge_meta(char *reg_buf, size_t reg_size,
+static int merge_meta(struct flb_kube_meta *meta,
                       char *api_buf, size_t api_size,
                       char **out_buf, size_t *out_size)
 {
@@ -231,20 +252,21 @@ static int merge_meta(char *reg_buf, size_t reg_size,
     int ret;
     int map_size;
     int meta_found = FLB_FALSE;
+    int spec_found = FLB_FALSE;
     int have_uid = -1;
     int have_labels = -1;
     int have_annotations = -1;
+    int have_nodename = -1;
     size_t off = 0;
     msgpack_sbuffer mp_sbuf;
     msgpack_packer mp_pck;
 
-    msgpack_unpacked result;
     msgpack_unpacked api_result;
     msgpack_unpacked meta_result;
     msgpack_object k;
     msgpack_object v;
     msgpack_object meta_val;
-    msgpack_object map;
+    msgpack_object spec_val;
     msgpack_object api_map;
 
     /*
@@ -264,25 +286,8 @@ static int merge_meta(char *reg_buf, size_t reg_size,
     msgpack_sbuffer_init(&mp_sbuf);
     msgpack_packer_init(&mp_pck, &mp_sbuf, msgpack_sbuffer_write);
 
-    /* Get current size of reg_buf map */
-    msgpack_unpacked_init(&result);
-    ret = msgpack_unpack_next(&result, reg_buf, reg_size, &off);
-    if (ret != MSGPACK_UNPACK_SUCCESS) {
-        msgpack_sbuffer_destroy(&mp_sbuf);
-        msgpack_unpacked_destroy(&result);
-        return -1;
-    }
-    map = result.data;
-
-    /* Check map */
-    if (map.type != MSGPACK_OBJECT_MAP) {
-        msgpack_sbuffer_destroy(&mp_sbuf);
-        msgpack_unpacked_destroy(&result);
-        return -1;
-    }
-
     /* Set map size: current + pod_id, labels and annotations */
-    map_size = map.via.map.size;
+    map_size = meta->fields;
 
     /* Iterate API server msgpack and lookup specific fields */
     off = 0;
@@ -290,7 +295,6 @@ static int merge_meta(char *reg_buf, size_t reg_size,
     ret = msgpack_unpack_next(&api_result, api_buf, api_size, &off);
     if (ret != MSGPACK_UNPACK_SUCCESS) {
         msgpack_sbuffer_destroy(&mp_sbuf);
-        msgpack_unpacked_destroy(&result);
         msgpack_unpacked_destroy(&api_result);
         return -1;
     }
@@ -321,8 +325,17 @@ static int merge_meta(char *reg_buf, size_t reg_size,
         }
     }
 
+    /* We are also interested in the nodeName from 'spec' map value. */
+    for (i = 0; i < api_map.via.map.size; i++) {
+       k = api_map.via.map.ptr[i].key;
+       if (k.via.str.size == 4 && strncmp(k.via.str.ptr, "spec", 4) == 0) {
+           spec_val = api_map.via.map.ptr[i].val;
+           spec_found = FLB_TRUE;
+           break;
+       }
+    }
+
     if (meta_found == FLB_FALSE) {
-        msgpack_unpacked_destroy(&result);
         msgpack_unpacked_destroy(&api_result);
         msgpack_sbuffer_destroy(&mp_sbuf);
         return -1;
@@ -355,14 +368,32 @@ static int merge_meta(char *reg_buf, size_t reg_size,
         }
     }
 
+    /* Process spec map value for nodeName */
+    if (spec_found == FLB_TRUE) {
+        for (i = 0; i < spec_val.via.map.size; i++) {
+            k = spec_val.via.map.ptr[i].key;
+            if (k.via.str.size == 8 &&
+                strncmp(k.via.str.ptr, "nodeName", 8) == 0) {
+                have_nodename = i;
+                map_size++;
+                break;
+            }
+        }
+    }
+
     /* Append Regex fields */
     msgpack_pack_map(&mp_pck, map_size);
-    for (i = 0; i < map.via.map.size; i++) {
-        k = map.via.map.ptr[i].key;
-        v = map.via.map.ptr[i].val;
-
-        msgpack_pack_object(&mp_pck, k);
-        msgpack_pack_object(&mp_pck, v);
+    if (meta->podname != NULL) {
+        msgpack_pack_str(&mp_pck, 8);
+        msgpack_pack_str_body(&mp_pck, "pod_name", 8);
+        msgpack_pack_str(&mp_pck, meta->podname_len);
+        msgpack_pack_str_body(&mp_pck, meta->podname, meta->podname_len);
+    }
+    if (meta->namespace != NULL) {
+        msgpack_pack_str(&mp_pck, 14);
+        msgpack_pack_str_body(&mp_pck, "namespace_name", 14);
+        msgpack_pack_str(&mp_pck, meta->namespace_len);
+        msgpack_pack_str_body(&mp_pck, meta->namespace, meta->namespace_len);
     }
 
     /* Append API Server content */
@@ -390,7 +421,14 @@ static int merge_meta(char *reg_buf, size_t reg_size,
         msgpack_pack_object(&mp_pck, v);
     }
 
-    msgpack_unpacked_destroy(&result);
+    if (have_nodename >= 0) {
+        v = spec_val.via.map.ptr[have_nodename].val;
+
+        msgpack_pack_str(&mp_pck, 4);
+        msgpack_pack_str_body(&mp_pck, "host", 4);
+        msgpack_pack_object(&mp_pck, v);
+    }
+
     msgpack_unpacked_destroy(&api_result);
     msgpack_unpacked_destroy(&meta_result);
 
@@ -400,29 +438,78 @@ static int merge_meta(char *reg_buf, size_t reg_size,
     return 0;
 }
 
-static inline int tag_to_meta(struct flb_kube *ctx, char *tag, int tag_len,
-                              struct flb_kube_meta *meta,
-                              char **out_buf, size_t *out_size)
+static inline int extract_meta(struct flb_kube *ctx, char *tag, int tag_len,
+                               char *data, size_t data_size,
+                               struct flb_kube_meta *meta)
 {
+    int i;
     size_t off = 0;
     ssize_t n;
+    char *container = NULL;
+    int container_found = FLB_FALSE;
+    int container_length = 0;
     struct flb_regex_search result;
+    msgpack_unpacked mp_result;
+    msgpack_object root;
+    msgpack_object map;
+    msgpack_object key;
+    msgpack_object val;
 
-    msgpack_sbuffer_init(&meta->mp_sbuf);
-    msgpack_packer_init(&meta->mp_pck, &meta->mp_sbuf, msgpack_sbuffer_write);
+    /* Reset meta context */
+    memset(meta, '\0', sizeof(struct flb_kube_meta));
 
-    meta->podname = NULL;
-    meta->namespace = NULL;
+    /* Journald */
+    if (ctx->use_journal == FLB_TRUE) {
+        off = 0;
+        msgpack_unpacked_init(&mp_result);
+        while (msgpack_unpack_next(&mp_result, data, data_size, &off)) {
+            root = mp_result.data;
+            if (root.type != MSGPACK_OBJECT_ARRAY) {
+                continue;
+            }
 
-    n = flb_regex_do(ctx->regex_tag, (unsigned char *) tag, tag_len, &result);
+            /* Lookup the CONTAINER_NAME key/value */
+            map = root.via.array.ptr[1];
+            for (i = 0; i < map.via.map.size; i++) {
+                key = map.via.map.ptr[i].key;
+                if (key.via.str.size != 14) {
+                    continue;
+                }
+
+                if (strncmp(key.via.str.ptr, "CONTAINER_NAME", 14) == 0) {
+                    val = map.via.map.ptr[i].val;
+                    container = (char *) val.via.str.ptr;
+                    container_length = val.via.str.size;
+                    container_found = FLB_TRUE;
+                    break;
+                }
+            }
+
+            if (container_found == FLB_TRUE) {
+                break;
+            }
+        }
+
+        if (container_found == FLB_FALSE) {
+            msgpack_unpacked_destroy(&mp_result);
+            return -1;
+        }
+        n = flb_regex_do(ctx->regex,
+                         (unsigned char *) container, container_length,
+                         &result);
+        msgpack_unpacked_destroy(&mp_result);
+    }
+    else {
+        /* Lookup using Tag string */
+        n = flb_regex_do(ctx->regex, (unsigned char *) tag, tag_len, &result);
+    }
+
     if (n <= 0) {
         return -1;
     }
 
-    msgpack_pack_map(&meta->mp_pck, n);
-
     /* Parse the regex results */
-    flb_regex_parse(ctx->regex_tag, &result, cb_results, meta);
+    flb_regex_parse(ctx->regex, &result, cb_results, meta);
 
     /* Compose API server cache key */
     if (meta->podname && meta->namespace) {
@@ -430,7 +517,6 @@ static inline int tag_to_meta(struct flb_kube *ctx, char *tag, int tag_len,
         meta->cache_key = flb_malloc(meta->cache_key_len + 1);
         if (!meta->cache_key) {
             flb_errno();
-            msgpack_sbuffer_destroy(&meta->mp_sbuf);
             return -1;
         }
 
@@ -451,10 +537,6 @@ static inline int tag_to_meta(struct flb_kube *ctx, char *tag, int tag_len,
         meta->cache_key_len = 0;
     }
 
-    /* Set outgoing buffer */
-    *out_buf = meta->mp_sbuf.data;
-    *out_size = meta->mp_sbuf.size;
-
     return 0;
 }
 
@@ -463,7 +545,6 @@ static inline int tag_to_meta(struct flb_kube *ctx, char *tag, int tag_len,
  * and merge buffers.
  */
 static int get_and_merge_meta(struct flb_kube *ctx, struct flb_kube_meta *meta,
-                              char *local_buf, size_t local_size,
                               char **out_buf, size_t *out_size)
 {
     int ret;
@@ -479,7 +560,7 @@ static int get_and_merge_meta(struct flb_kube *ctx, struct flb_kube_meta *meta,
         return -1;
     }
 
-    ret = merge_meta(local_buf, local_size,
+    ret = merge_meta(meta,
                      api_buf, api_size,
                      &merge_buf, &merge_size);
     flb_free(api_buf);
@@ -502,10 +583,12 @@ static int flb_kube_network_init(struct flb_kube *ctx, struct flb_config *config
     ctx->upstream = NULL;
 
     if (ctx->api_https == FLB_TRUE) {
-        if (!ctx->tls_ca_file) {
+        if (!ctx->tls_ca_path && !ctx->tls_ca_file) {
             ctx->tls_ca_file  = flb_strdup(FLB_KUBE_CA);
         }
-        ctx->tls.context = flb_tls_context_new(FLB_TRUE,
+        ctx->tls.context = flb_tls_context_new(ctx->tls_verify,
+                                               ctx->tls_debug,
+                                               ctx->tls_ca_path,
                                                ctx->tls_ca_file,
                                                NULL, NULL, NULL);
         if (!ctx->tls.context) {
@@ -520,6 +603,10 @@ static int flb_kube_network_init(struct flb_kube *ctx, struct flb_config *config
                                         ctx->api_port,
                                         io_type,
                                         &ctx->tls);
+    if (!ctx->upstream) {
+        /* note: if ctx->tls.context is set, it's destroyed upon context exit */
+        return -1;
+    }
 
     /* Remove async flag from upstream */
     ctx->upstream->flags &= ~(FLB_IO_ASYNC);
@@ -598,68 +685,91 @@ int flb_kube_meta_init(struct flb_kube *ctx, struct flb_config *config)
 
 int flb_kube_meta_get(struct flb_kube *ctx,
                       char *tag, int tag_len,
-                      char **out_buf, size_t *out_size)
+                      char *data, size_t data_size,
+                      char **out_buf, size_t *out_size,
+                      struct flb_kube_meta *meta)
 {
     int id;
     int ret;
-    char *local_meta_buf;
-    size_t local_meta_size;
     char *hash_meta_buf;
     size_t hash_meta_size;
-    char *out_meta_buf;
-    size_t out_meta_size;
-    struct flb_kube_meta meta = {};
 
     if (ctx->dummy_meta == FLB_TRUE) {
         flb_dummy_meta(out_buf, out_size);
         return 0;
     }
 
-    /* Get meta from the tag (cache key is the important one) */
-    ret = tag_to_meta(ctx, tag, tag_len, &meta,
-                      &local_meta_buf, &local_meta_size);
+    /* Get metadata from tag or record (cache key is the important one) */
+    ret = extract_meta(ctx, tag, tag_len, data, data_size, meta);
     if (ret != 0) {
         return -1;
     }
 
     /* Check if we have some data associated to the cache key */
     ret = flb_hash_get(ctx->hash_table,
-                       meta.cache_key, meta.cache_key_len,
+                       meta->cache_key, meta->cache_key_len,
                        &hash_meta_buf, &hash_meta_size);
     if (ret == -1) {
         /* Retrieve API server meta and merge with local meta */
-        ret = get_and_merge_meta(ctx, &meta,
-                                 local_meta_buf, local_meta_size,
-                                 &out_meta_buf, &out_meta_size);
+        ret = get_and_merge_meta(ctx, meta,
+                                 &hash_meta_buf, &hash_meta_size);
         if (ret == -1) {
-            goto out;
+            return -1;
         }
 
         id = flb_hash_add(ctx->hash_table,
-                          meta.cache_key, meta.cache_key_len,
-                          out_meta_buf, out_meta_size);
+                          meta->cache_key, meta->cache_key_len,
+                          hash_meta_buf, hash_meta_size);
         if (id >= 0) {
             /*
-             * Release the original buffer created on tag_to_meta() as a new
+             * Release the original buffer created on extract_meta() as a new
              * copy have been generated into the hash table, then re-set
              * the outgoing buffer and size.
              */
-            flb_free(out_meta_buf);
-            flb_hash_get_by_id(ctx->hash_table, id, meta.cache_key,
-                               out_buf, out_size);
-            goto out;
+            flb_free(hash_meta_buf);
+            flb_hash_get_by_id(ctx->hash_table, id, meta->cache_key,
+                               &hash_meta_buf, &hash_meta_size);
         }
     }
-    else {
-        *out_buf = hash_meta_buf;
-        *out_size = hash_meta_size;
-    }
 
- out:
-    msgpack_sbuffer_destroy(&meta.mp_sbuf);
-    flb_free(meta.cache_key);
-    flb_free(meta.podname);
-    flb_free(meta.namespace);
+    *out_buf = hash_meta_buf;
+    *out_size = hash_meta_size;
 
     return 0;
+}
+
+int flb_kube_meta_release(struct flb_kube_meta *meta)
+{
+    int r = 0;
+
+    if (meta->namespace) {
+        flb_free(meta->namespace);
+        r++;
+    }
+
+    if (meta->podname) {
+        flb_free(meta->podname);
+        r++;
+    }
+
+    if (meta->container_name) {
+        flb_free(meta->container_name);
+        r++;
+    }
+
+    if (meta->docker_id) {
+        flb_free(meta->docker_id);
+        r++;
+    }
+
+    if (meta->container_hash) {
+        flb_free(meta->container_hash);
+        r++;
+    }
+
+    if (meta->cache_key) {
+        flb_free(meta->cache_key);
+    }
+
+    return r;
 }

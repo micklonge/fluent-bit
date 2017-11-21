@@ -26,6 +26,13 @@
 
 #include <systemd/sd-journal.h>
 
+/* return values */
+#define FLB_SYSTEMD_NONE     0
+#define FLB_SYSTEMD_OK       1
+#define FLB_SYSTEMD_MORE     2
+#define FLB_SYSTEMD_BUSY     3
+
+/* constants */
 #define FLB_SYSTEMD_UNIT     "_SYSTEMD_UNIT"
 #define FLB_SYSTEMD_UNKNOWN  "unknown"
 #define FLB_SYSTEND_ENTRIES  5000
@@ -36,9 +43,12 @@ struct flb_systemd_config {
     int fd;          /* Journal file descriptor */
     sd_journal *j;   /* Journal context */
     char *cursor;
+    char *path;
 
     /* Internal */
-    int coll_fd_journal;
+    int ch_manager[2];         /* pipe: channel manager    */
+    int coll_fd_archive;       /* archive collector        */
+    int coll_fd_journal;       /* journal, events mode     */
     int dynamic_tag;
     int max_entries;
     struct flb_sqldb *db;

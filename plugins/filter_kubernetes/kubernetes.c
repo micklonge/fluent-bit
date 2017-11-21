@@ -93,7 +93,8 @@ static int unescape_string(char *buf, int buf_len, char **unesc_buf)
 
 static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
                             msgpack_object source_map,
-                            char *kube_buf, size_t kube_size, struct flb_kube *ctx)
+                            char *kube_buf, size_t kube_size,
+                            struct flb_kube_meta *meta, struct flb_kube *ctx)
 {
     int i;
     int ret;
@@ -103,7 +104,7 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
     int new_map_size = 0;
     int log_index = -1;
     int log_size = 0;
-    int json_size;
+    int json_size = 0;
     int log_buf_entries = 0;
     size_t off = 0;
     char *tmp;
@@ -159,11 +160,12 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
 
         /* Do not process ending \n if set at the end of the map */
         size = v.via.str.size;
-        if (v.via.str.ptr[v.via.str.size - 2] == '\\' &&
-            v.via.str.ptr[v.via.str.size - 1] == 'n') {
-            size -= 2;
+        for (i = size - 1; i > 0; i--) {
+            if (v.via.str.ptr[i] == '}') {
+                size = i + 1;
+                break;
+            }
         }
-
         json_size = unescape_string((char *) v.via.str.ptr,
                                     size, &ctx->merge_json_buf);
         ret = flb_pack_json(ctx->merge_json_buf, json_size,
@@ -205,8 +207,21 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
     for (i = 0; i < map_size; i++) {
         k = source_map.via.map.ptr[i].key;
         v = source_map.via.map.ptr[i].val;
-        msgpack_pack_object(pck, k);
-        msgpack_pack_object(pck, v);
+
+        /*
+         * If the original 'log' field was unescaped and converted to
+         * msgpack properly, re-pack the new string version to avoid
+         * multiple escape sequences in outgoing plugins.
+         */
+        if (log_buf && log_index == i) {
+            msgpack_pack_object(pck, k);
+            msgpack_pack_str(pck, json_size);
+            msgpack_pack_str_body(pck, ctx->merge_json_buf, json_size);
+        }
+        else {
+            msgpack_pack_object(pck, k);
+            msgpack_pack_object(pck, v);
+        }
     }
 
     /* Merged JSON */
@@ -236,7 +251,48 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
     if (kube_buf && kube_size > 0) {
         msgpack_pack_str(pck, 10);
         msgpack_pack_str_body(pck, "kubernetes", 10);
-        msgpack_sbuffer_write(sbuf, kube_buf, kube_size);
+
+        off = 0;
+        msgpack_unpacked_init(&result);
+        msgpack_unpack_next(&result, kube_buf, kube_size, &off);
+        root = result.data;
+
+        /* root points to a map, calc the final size */
+        map_size = root.via.map.size;
+        map_size += meta->skip;
+
+        /* Pack cached kube buf entries */
+        msgpack_pack_map(pck, map_size);
+        for (i = 0; i < root.via.map.size; i++) {
+            k = root.via.map.ptr[i].key;
+            v = root.via.map.ptr[i].val;
+            msgpack_pack_object(pck, k);
+            msgpack_pack_object(pck, v);
+        }
+        msgpack_unpacked_destroy(&result);
+
+        /* Pack meta */
+        if (meta->container_name != NULL) {
+            msgpack_pack_str(pck, 14);
+            msgpack_pack_str_body(pck, "container_name", 14);
+            msgpack_pack_str(pck, meta->container_name_len);
+            msgpack_pack_str_body(pck, meta->container_name,
+                                  meta->container_name_len);
+        }
+        if (meta->docker_id != NULL) {
+            msgpack_pack_str(pck, 9);
+            msgpack_pack_str_body(pck, "docker_id", 9);
+            msgpack_pack_str(pck, meta->docker_id_len);
+            msgpack_pack_str_body(pck, meta->docker_id,
+                                  meta->docker_id_len);
+        }
+        if (meta->container_hash != NULL) {
+            msgpack_pack_str(pck, 14);
+            msgpack_pack_str_body(pck, "container_hash", 14);
+            msgpack_pack_str(pck, meta->container_hash_len);
+            msgpack_pack_str_body(pck, meta->container_hash,
+                                  meta->container_hash_len);
+        }
     }
 
     return 0;
@@ -260,11 +316,16 @@ static int cb_kube_filter(void *data, size_t bytes,
     msgpack_sbuffer tmp_sbuf;
     msgpack_packer tmp_pck;
     struct flb_kube *ctx = filter_context;
+    struct flb_kube_meta meta = {0};
+
     (void) f_ins;
     (void) config;
 
     /* Check if we have some cached metadata for the incoming events */
-    ret = flb_kube_meta_get(ctx, tag, tag_len, &cache_buf, &cache_size);
+    ret = flb_kube_meta_get(ctx,
+                            tag, tag_len,
+                            data, bytes,
+                            &cache_buf, &cache_size, &meta);
     if (ret == -1) {
         return FLB_FILTER_NOTOUCH;
     }
@@ -285,7 +346,6 @@ static int cb_kube_filter(void *data, size_t bytes,
         time = root.via.array.ptr[0];
         map  = root.via.array.ptr[1];
 
-
         /* Compose the new array */
         msgpack_pack_array(&tmp_pck, 2);
         msgpack_pack_object(&tmp_pck, time);
@@ -293,7 +353,7 @@ static int cb_kube_filter(void *data, size_t bytes,
         ret = pack_map_content(&tmp_pck, &tmp_sbuf,
                                map,
                                cache_buf, cache_size,
-                               ctx);
+                               &meta, ctx);
         if (ret != 0) {
             msgpack_sbuffer_destroy(&tmp_sbuf);
             msgpack_unpacked_destroy(&result);
@@ -304,6 +364,9 @@ static int cb_kube_filter(void *data, size_t bytes,
         }
     }
     msgpack_unpacked_destroy(&result);
+
+    /* Release meta fields */
+    flb_kube_meta_release(&meta);
 
     /* link new buffers */
     *out_buf   = tmp_sbuf.data;

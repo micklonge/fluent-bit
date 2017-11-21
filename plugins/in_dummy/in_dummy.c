@@ -25,7 +25,6 @@
 #include <fluent-bit/flb_input.h>
 #include <fluent-bit/flb_config.h>
 #include <fluent-bit/flb_error.h>
-#include <fluent-bit/flb_utils.h>
 #include <fluent-bit/flb_time.h>
 #include <fluent-bit/flb_pack.h>
 
@@ -64,6 +63,7 @@ static int in_dummy_collect(struct flb_input_instance *i_ins,
 static int config_destroy(struct flb_in_dummy_config *ctx)
 {
     flb_free(ctx->dummy_message);
+    flb_free(ctx->ref_msgpack);
     flb_free(ctx);
     return 0;
 }
@@ -76,6 +76,8 @@ static int configure(struct flb_in_dummy_config *ctx,
     char *str = NULL;
     int  ret = -1;
     long val  = 0;
+
+    ctx->ref_msgpack = NULL;
 
     /* samples */
     str = flb_input_get_property("dummy", in);
@@ -112,7 +114,6 @@ static int configure(struct flb_in_dummy_config *ctx,
                             &ctx->ref_msgpack, &ctx->ref_msgpack_size);
         if (ret != 0) {
             flb_error("[in_dummy] Unexpected error");
-            config_destroy(ctx);
             return -1;
         }
     }
@@ -147,7 +148,7 @@ static int in_dummy_init(struct flb_input_instance *in,
                                        tm.tv_sec,
                                        tm.tv_nsec, config);
     if (ret < 0) {
-        flb_utils_error_c("could not set collector for dummy input plugin");
+        flb_error("could not set collector for dummy input plugin");
         config_destroy(ctx);
         return -1;
     }

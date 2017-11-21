@@ -30,6 +30,7 @@
 #include <fluent-bit/flb_error.h>
 #include <fluent-bit/flb_utils.h>
 #include <fluent-bit/flb_engine.h>
+#include <fluent-bit/flb_metrics.h>
 
 #define protcmp(a, b)  strncasecmp(a, b, strlen(a))
 
@@ -130,12 +131,18 @@ struct flb_input_instance *flb_input_new(struct flb_config *config,
         instance->host.name    = NULL;
         instance->host.address = NULL;
         instance->host.uri     = NULL;
+        instance->host.ipv6    = FLB_FALSE;
 
         /* Initialize msgpack counter and buffers */
         instance->mp_records = 0;
         msgpack_sbuffer_init(&instance->mp_sbuf);
         msgpack_packer_init(&instance->mp_pck, &instance->mp_sbuf,
                             msgpack_sbuffer_write);
+        instance->mp_zone = msgpack_zone_new(MSGPACK_ZONE_CHUNK_SIZE);
+        if (!instance->mp_zone) {
+            flb_free(instance);
+            return NULL;
+        }
 
         /* Initialize list heads */
         mk_list_init(&instance->routes);
@@ -163,8 +170,15 @@ struct flb_input_instance *flb_input_new(struct flb_config *config,
         instance->mp_buf_limit = 0;
         instance->mp_buf_status = FLB_INPUT_RUNNING;
 
+        /* Metrics */
+#ifdef FLB_HAVE_METRICS
+        instance->metrics = flb_metrics_create(instance->name);
+        if (instance->metrics) {
+            flb_metrics_add(FLB_METRIC_N_RECORDS, "records", instance->metrics);
+            flb_metrics_add(FLB_METRIC_N_BYTES, "bytes", instance->metrics);
+        }
+#endif
         mk_list_add(&instance->_head, &config->inputs);
-        break;
     }
 
     return instance;
@@ -187,6 +201,7 @@ static inline int prop_key_check(char *key, char *kv, int k_len)
 int flb_input_set_property(struct flb_input_instance *in, char *k, char *v)
 {
     int len;
+    ssize_t limit;
     char *tmp;
     struct flb_config_prop *prop;
 
@@ -205,8 +220,12 @@ int flb_input_set_property(struct flb_input_instance *in, char *k, char *v)
         in->tag_len = strlen(tmp);
     }
     else if (prop_key_check("mem_buf_limit", k, len) == 0 && tmp) {
-        in->mp_buf_limit = flb_utils_size_to_bytes(tmp);
+        limit = flb_utils_size_to_bytes(tmp);
         flb_free(tmp);
+        if (limit == -1) {
+            return -1;
+        }
+        in->mp_buf_limit = (size_t) limit;
     }
     else if (prop_key_check("listen", k, len) == 0) {
         in->host.listen = tmp;
@@ -219,6 +238,10 @@ int flb_input_set_property(struct flb_input_instance *in, char *k, char *v)
             in->host.port = atoi(tmp);
             flb_free(tmp);
         }
+    }
+    else if (prop_key_check("ipv6", k, len) == 0 && tmp) {
+        in->host.ipv6 = flb_utils_bool(tmp);
+        flb_free(tmp);
     }
     else {
         /* Append any remaining configuration key to prop list */
@@ -341,6 +364,7 @@ void flb_input_exit_all(struct flb_config *config)
 
         /* Destroy buffer */
         msgpack_sbuffer_destroy(&in->mp_sbuf);
+        msgpack_zone_free(in->mp_zone);
 
         /* release the tag if any */
         flb_free(in->tag);
@@ -360,6 +384,13 @@ void flb_input_exit_all(struct flb_config *config)
         }
 
         flb_input_dyntag_exit(in);
+
+        /* Remove metrics */
+#ifdef FLB_HAVE_METRICS
+        if (in->metrics) {
+            flb_metrics_destroy(in->metrics);
+        }
+#endif
 
         /* Unlink and release */
         mk_list_del(&in->_head);
@@ -442,7 +473,8 @@ int flb_input_set_collector_time(struct flb_input_instance *in,
     collector->seconds     = seconds;
     collector->nanoseconds = nanoseconds;
     collector->instance    = in;
-
+    collector->running     = FLB_FALSE;
+    MK_EVENT_NEW(&collector->event);
     mk_list_add(&collector->_head, &config->collectors);
     mk_list_add(&collector->_head_ins, &in->collectors);
 
@@ -466,56 +498,94 @@ int flb_input_set_collector_event(struct flb_input_instance *in,
     collector->seconds     = -1;
     collector->nanoseconds = -1;
     collector->instance    = in;
+    collector->running     = FLB_FALSE;
+    MK_EVENT_NEW(&collector->event);
     mk_list_add(&collector->_head, &config->collectors);
     mk_list_add(&collector->_head_ins, &in->collectors);
 
     return collector->id;
 }
 
-int flb_input_collectors_start(struct flb_config *config)
+static int collector_start(struct flb_input_collector *coll,
+                           struct flb_config *config)
 {
     int fd;
     int ret;
-    struct mk_list *head;
     struct mk_event *event;
     struct mk_event_loop *evl;
-    struct flb_input_collector *collector;
 
+    if (coll->running == FLB_TRUE) {
+        return 0;
+    }
+
+    event = &coll->event;
     evl = config->evl;
+
+    if (coll->type == FLB_COLLECT_TIME) {
+        event->mask = MK_EVENT_EMPTY;
+        event->status = MK_EVENT_NONE;
+        fd = mk_event_timeout_create(evl, coll->seconds,
+                                     coll->nanoseconds, event);
+        if (fd == -1) {
+            flb_error("[input collector] COLLECT_TIME registration failed");
+            coll->running = FLB_FALSE;
+            return -1;
+        }
+        coll->fd_timer = fd;
+    }
+    else if (coll->type & (FLB_COLLECT_FD_EVENT | FLB_COLLECT_FD_SERVER)) {
+        event->fd     = coll->fd_event;
+        event->mask   = MK_EVENT_EMPTY;
+        event->status = MK_EVENT_NONE;
+
+        ret = mk_event_add(evl,
+                           coll->fd_event,
+                           FLB_ENGINE_EV_CORE,
+                           MK_EVENT_READ, event);
+        if (ret == -1) {
+            flb_error("[input collector] COLLECT_EVENT registration failed");
+            close(coll->fd_event);
+            coll->running = FLB_FALSE;
+            return -1;
+        }
+    }
+
+    coll->running = FLB_TRUE;
+    return 0;
+}
+
+int flb_input_collector_start(int coll_id, struct flb_input_instance *in)
+{
+    int ret;
+    int c = 0;
+    struct mk_list *head;
+    struct flb_input_collector *coll;
+
+    mk_list_foreach(head, &in->collectors) {
+        coll = mk_list_entry(head, struct flb_input_collector, _head_ins);
+        if (coll->id == coll_id) {
+            ret = collector_start(coll, in->config);
+            if (ret == -1) {
+                flb_error("[input] error starting collector #%i: %s",
+                          in->name);
+            }
+            return ret;
+        }
+        c++;
+    }
+
+    return -1;
+}
+
+int flb_input_collectors_start(struct flb_config *config)
+{
+    struct mk_list *head;
+    struct flb_input_collector *collector;
 
     /* For each Collector, register the event into the main loop */
     mk_list_foreach(head, &config->collectors) {
         collector = mk_list_entry(head, struct flb_input_collector, _head);
-        event = &collector->event;
-
-        if (collector->type == FLB_COLLECT_TIME) {
-            event->mask = MK_EVENT_EMPTY;
-            event->status = MK_EVENT_NONE;
-            fd = mk_event_timeout_create(evl, collector->seconds,
-                                         collector->nanoseconds, event);
-            if (fd == -1) {
-                flb_error("[input collector] COLLECT_TIME registration failed");
-                collector->running = FLB_FALSE;
-                continue;
-            }
-            collector->fd_timer = fd;
-        }
-        else if (collector->type & (FLB_COLLECT_FD_EVENT | FLB_COLLECT_FD_SERVER)) {
-            event->fd     = collector->fd_event;
-            event->mask   = MK_EVENT_EMPTY;
-            event->status = MK_EVENT_NONE;
-
-            ret = mk_event_add(evl,
-                               collector->fd_event,
-                               FLB_ENGINE_EV_CORE,
-                               MK_EVENT_READ, event);
-            if (ret == -1) {
-                close(collector->fd_event);
-                collector->running = FLB_FALSE;
-                continue;
-            }
-        }
-        collector->running = FLB_TRUE;
+        collector_start(collector, config);
     }
 
     return 0;
@@ -535,6 +605,18 @@ static struct flb_input_collector *get_collector(int id,
     }
 
     return NULL;
+}
+
+int flb_input_collector_running(int coll_id, struct flb_input_instance *in)
+{
+    struct flb_input_collector *coll;
+
+    coll = get_collector(coll_id, in);
+    if (!coll) {
+        return FLB_FALSE;
+    }
+
+    return coll->running;
 }
 
 int flb_input_pause_all(struct flb_config *config)
@@ -610,7 +692,8 @@ int flb_input_collector_resume(int coll_id, struct flb_input_instance *in)
     }
 
     if (coll->running == FLB_TRUE) {
-        flb_error("[input] cannot resume %s, already running", in->name);
+        flb_error("[input] cannot resume collector %s:%i, already running",
+                  in->name, coll_id);
         return -1;
     }
 
@@ -659,6 +742,8 @@ int flb_input_set_collector_socket(struct flb_input_instance *in,
     collector->seconds     = -1;
     collector->nanoseconds = -1;
     collector->instance    = in;
+    collector->running     = FLB_FALSE;
+    MK_EVENT_NEW(&collector->event);
     mk_list_add(&collector->_head, &config->collectors);
     mk_list_add(&collector->_head_ins, &in->collectors);
 

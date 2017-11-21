@@ -2,7 +2,7 @@
 
 /*  Monkey HTTP Server
  *  ==================
- *  Copyright 2001-2015 Monkey Software LLC <eduardo@monkey.io>
+ *  Copyright 2001-2017 Eduardo Silva <eduardo@monkey.io>
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -118,6 +118,21 @@ static int is_file_included(struct mk_rconf *conf, const char *path)
     return MK_FALSE;
 }
 
+char *mk_rconf_meta_get(struct mk_rconf *conf, char *key)
+{
+    struct mk_list *head;
+    struct mk_rconf_entry *meta;
+
+    mk_list_foreach(head, &conf->metas) {
+        meta = mk_list_entry(head, struct mk_rconf_entry, _head);
+        if (strcmp(meta->key, key) == 0) {
+            return meta->val;
+        }
+    }
+
+    return NULL;
+}
+
 static int mk_rconf_meta_add(struct mk_rconf *conf, char *buf, int len)
 {
     int xlen;
@@ -220,22 +235,28 @@ static int mk_rconf_read(struct mk_rconf *conf, const char *path)
             continue;
         }
 
-        if (indent_len == -1 && len > 1) {
-            if (len > 9 && strncasecmp(buf, "@INCLUDE ", 9) == 0) {
-                ret = mk_rconf_read(conf, buf + 9);
-                if (ret == -1) {
-                    conf->level--;
-                    return -1;
+        if (len > 9 && strncasecmp(buf, "@INCLUDE ", 9) == 0) {
+            ret = mk_rconf_read(conf, buf + 9);
+            if (ret == -1) {
+                conf->level--;
+                fclose(f);
+                if (indent) {
+                    mk_mem_free(indent);
                 }
-                continue;
+                return -1;
             }
-            else if (buf[0] == '@' && len > 3) {
-                ret = mk_rconf_meta_add(conf, buf, len);
-                if (ret == -1) {
-                    return -1;
+            continue;
+        }
+        else if (buf[0] == '@' && len > 3) {
+            ret = mk_rconf_meta_add(conf, buf, len);
+            if (ret == -1) {
+                fclose(f);
+                if (indent) {
+                    mk_mem_free(indent);
                 }
-                continue;
+                return -1;
             }
+            continue;
         }
 
         /* Section definition */
@@ -332,7 +353,9 @@ static int mk_rconf_read(struct mk_rconf *conf, const char *path)
     fflush(stdout);
     */
     fclose(f);
-    if (indent) mk_mem_free(indent);
+    if (indent) {
+        mk_mem_free(indent);
+    }
 
     /* Append this file to the list */
     file = mk_mem_alloc(sizeof(struct mk_rconf_file));

@@ -22,6 +22,7 @@
 #include <fluent-bit/flb_parser.h>
 #include <fluent-bit/flb_time.h>
 #include <fluent-bit/flb_mem.h>
+#include <fluent-bit/flb_pack.h>
 #include <msgpack.h>
 
 #include <string.h>
@@ -43,20 +44,61 @@ static int msgpackobj2char(msgpack_object *obj,
         *ret_char_size = obj->via.bin.size;
         ret = 0;
     }
-    
+
     return ret;
+}
+
+static int add_parser(char *parser, struct filter_parser_ctx *ctx,
+                       struct flb_config *config)
+{
+    struct flb_parser *p;
+    struct filter_parser *fp;
+
+    p = flb_parser_get(parser, config);
+    if (!p) {
+        return -1;
+    }
+
+    fp = flb_malloc(sizeof(struct filter_parser));
+    if (!fp) {
+        flb_errno();
+        return -1;
+    }
+
+    fp->parser = p;
+    mk_list_add(&fp->_head, &ctx->parsers);
+    return 0;
+}
+
+static int delete_parsers(struct filter_parser_ctx *ctx)
+{
+    int c;
+    struct mk_list *tmp;
+    struct mk_list *head;
+    struct filter_parser *fp;
+
+    mk_list_foreach_safe(head, tmp, &ctx->parsers) {
+        fp = mk_list_entry(head, struct filter_parser, _head);
+        mk_list_del(&fp->_head);
+        flb_free(fp);
+        c++;
+    }
+
+    return c;
 }
 
 static int configure(struct filter_parser_ctx *ctx,
                      struct flb_filter_instance *f_ins,
                      struct flb_config *config)
 {
-
+    int ret;
     struct flb_config_prop *prop = NULL;
     struct mk_list *head = NULL;
 
+
     ctx->key_name = NULL;
-    ctx->parser   = NULL;
+    ctx->reserve_data = FLB_FALSE;
+    mk_list_init(&ctx->parsers);
 
     /* Iterate all filter properties */
     mk_list_foreach(head, &f_ins->properties) {
@@ -67,10 +109,13 @@ static int configure(struct filter_parser_ctx *ctx,
             ctx->key_name_len = strlen(prop->val);
         }
         if (!strcasecmp(prop->key, "parser")) {
-            ctx->parser  = flb_parser_get(prop->val, config);
-            if (ctx->parser == NULL) {
+            ret = add_parser(prop->val, ctx, config);
+            if (ret == -1) {
                 flb_error("[filter_parser] requested parser '%s' not found", prop->val);
             }
+        }
+        if (!strcasecmp(prop->key, "reserve_data")) {
+            ctx->reserve_data = flb_utils_bool(prop->val);
         }
     }
 
@@ -78,7 +123,7 @@ static int configure(struct filter_parser_ctx *ctx,
         flb_error("[filter_parser] \"key_name\" is missing\n");
         return -1;
     }
-    if (ctx->parser == NULL) {
+    if (mk_list_size(&ctx->parsers) == 0) {
         flb_error("[filter_parser] Invalid \"parser\"\n");
         return -1;
     }
@@ -120,6 +165,7 @@ static int cb_parser_filter(void *data, size_t bytes,
                             void *context,
                             struct flb_config *config)
 {
+    int parsed = FLB_FALSE;
     struct filter_parser_ctx *ctx = context;
     msgpack_unpacked result;
     size_t off = 0;
@@ -142,6 +188,12 @@ static int cb_parser_filter(void *data, size_t bytes,
     msgpack_sbuffer tmp_sbuf;
     msgpack_packer tmp_pck;
 
+    msgpack_object_kv **append_arr = NULL;
+    size_t            append_arr_len;
+    int                append_arr_i;
+    struct mk_list *head;
+    struct filter_parser *fp;
+
     /* Create temporal msgpack buffer */
     msgpack_sbuffer_init(&tmp_sbuf);
     msgpack_packer_init(&tmp_pck, &tmp_sbuf, msgpack_sbuffer_write);
@@ -149,15 +201,30 @@ static int cb_parser_filter(void *data, size_t bytes,
     msgpack_unpacked_init(&result);
     while (msgpack_unpack_next(&result, data, bytes, &off)) {
         out_buf = NULL;
-        
+        append_arr_i = 0;
+
         if (result.data.type != MSGPACK_OBJECT_ARRAY) {
             continue;
         }
-        flb_time_pop_from_msgpack(&tm, &result, &obj);        
+        flb_time_pop_from_msgpack(&tm, &result, &obj);
         if (obj->type == MSGPACK_OBJECT_MAP) {
             map_num = obj->via.map.size;
-            for(i=0; i<map_num; i++) {
+            if (ctx->reserve_data) {
+                append_arr_len = obj->via.map.size;
+                append_arr = flb_malloc(sizeof(msgpack_object_kv*) * append_arr_len);
+
+                for (i = 0; i < append_arr_len; i++){
+                    append_arr[i] = NULL;
+                }
+            }
+
+            parsed = FLB_FALSE;
+            for (i = 0; i < map_num && parsed == FLB_FALSE; i++) {
                 kv = &obj->via.map.ptr[i];
+                if (ctx->reserve_data) {
+                    append_arr[append_arr_i] = kv;
+                    append_arr_i++;
+                }
                 if ( msgpackobj2char(&kv->key, &key_str, &key_len) < 0 ) {
                     /* key is not string */
                     continue;
@@ -168,16 +235,27 @@ static int cb_parser_filter(void *data, size_t bytes,
                         /* val is not string */
                         continue;
                     }
-                    if ( flb_parser_do(ctx->parser,
-                                        val_str, val_len,
-                                       (void **)&out_buf, &out_size, &parsed_time) >= 0) {
-                        if (flb_time_to_double(&parsed_time) != 0) {
-                            flb_time_copy(&tm, &parsed_time);
+
+                    /* Lookup parser */
+                    mk_list_foreach(head, &ctx->parsers) {
+                        fp = mk_list_entry(head, struct filter_parser, _head);
+
+                        ret = flb_parser_do(fp->parser, val_str, val_len,
+                                            (void **) &out_buf, &out_size,
+                                            &parsed_time);
+                        if (ret >= 0) {
+                            parsed = FLB_TRUE;
+
+                            if (flb_time_to_double(&parsed_time) != 0) {
+                                flb_time_copy(&tm, &parsed_time);
+                            }
+                            if (ctx->reserve_data) {
+                                append_arr_i--;
+                                append_arr_len--;
+                                append_arr[append_arr_i] = NULL;
+                            }
+                            break;
                         }
-                        break;
-                    }
-                    else {
-                        flb_warn("[filter_parser] parse error");
                     }
                 }
             }
@@ -185,6 +263,24 @@ static int cb_parser_filter(void *data, size_t bytes,
             if (out_buf != NULL) {
                 msgpack_pack_array(&tmp_pck, 2);
                 flb_time_append_to_msgpack(&tm, &tmp_pck, 0);
+                if (ctx->reserve_data) {
+                    char *new_buf = NULL;
+                    int  new_size;
+                    int ret;
+                    ret = flb_msgpack_expand_map(out_buf, out_size,
+                                                 append_arr, append_arr_len,
+                                                 &new_buf, &new_size);
+                    if (ret == -1) {
+                        flb_error("[filter_parser] cannot expand map");
+                        flb_free(append_arr);
+                        msgpack_unpacked_destroy(&result);
+                        return FLB_FILTER_NOTOUCH;
+                    }
+
+                    flb_free(out_buf);
+                    out_buf = new_buf;
+                    out_size = new_size;
+                }
                 msgpack_sbuffer_write(&tmp_sbuf, out_buf, out_size);
                 flb_free(out_buf);
                 ret = FLB_FILTER_MODIFIED;
@@ -193,6 +289,8 @@ static int cb_parser_filter(void *data, size_t bytes,
                 /* re-use original data*/
                 msgpack_pack_object(&tmp_pck, result.data);
             }
+            flb_free(append_arr);
+            append_arr = NULL;
         }
         else {
             continue;
@@ -209,8 +307,6 @@ static int cb_parser_filter(void *data, size_t bytes,
     *ret_buf = tmp_sbuf.data;
     *ret_bytes = tmp_sbuf.size;
 
-
-
     return ret;
 }
 
@@ -219,7 +315,10 @@ static int cb_parser_exit(void *data, struct flb_config *config)
 {
     struct filter_parser_ctx *ctx = data;
 
-    flb_free(ctx);
+    if (ctx != NULL) {
+        delete_parsers(ctx);
+        flb_free(ctx);
+    }
     return 0;
 }
 

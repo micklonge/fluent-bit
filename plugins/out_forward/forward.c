@@ -370,7 +370,7 @@ static int secure_forward_init(struct flb_out_forward_config *ctx)
 int cb_forward_init(struct flb_output_instance *ins, struct flb_config *config,
                     void *data)
 {
-    int io_type;
+    int io_flags;
     char *tmp;
     struct flb_out_forward_config *ctx;
     struct flb_upstream *upstream;
@@ -392,25 +392,28 @@ int cb_forward_init(struct flb_output_instance *ins, struct flb_config *config,
         ins->host.port = 24224;
     }
 
-
     /* Check if TLS is enabled */
 #ifdef FLB_HAVE_TLS
     if (ins->use_tls == FLB_TRUE) {
-        io_type = FLB_IO_TLS;
+        io_flags = FLB_IO_TLS;
         ctx->secured = FLB_TRUE;
     }
     else {
-        io_type = FLB_IO_TCP;
+        io_flags = FLB_IO_TCP;
     }
 #else
-    io_type = FLB_IO_TCP;
+    io_flags = FLB_IO_TCP;
 #endif
+
+    if (ins->host.ipv6 == FLB_TRUE) {
+        io_flags |= FLB_IO_IPV6;
+    }
 
     /* Prepare an upstream handler */
     upstream = flb_upstream_create(config,
                                    ins->host.name,
                                    ins->host.port,
-                                   io_type, (void *) &ins->tls);
+                                   io_flags, (void *) &ins->tls);
     if (!upstream) {
         flb_free(ctx);
         return -1;
@@ -437,9 +440,7 @@ int cb_forward_init(struct flb_output_instance *ins, struct flb_config *config,
     ctx->time_as_integer = FLB_FALSE;
     tmp = flb_output_get_property("time_as_integer", ins);
     if (tmp) {
-        if (strcmp(tmp, "on") == 0 || strcmp(tmp, "true") == 0) {
-            ctx->time_as_integer = FLB_TRUE;
-        }
+        ctx->time_as_integer = flb_utils_bool(tmp);
     }
 
 #ifdef FLB_HAVE_TLS
@@ -516,6 +517,10 @@ int cb_forward_exit(void *data, struct flb_config *config)
 {
     struct flb_out_forward_config *ctx = data;
     (void) config;
+
+    if (!ctx) {
+        return 0;
+    }
 
     if (ctx->shared_key) {
         flb_free(ctx->shared_key);

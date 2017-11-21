@@ -30,6 +30,8 @@
 #include <msgpack.h>
 #include <jsmn/jsmn.h>
 
+#define try_to_write_str  flb_utils_write_str
+
 static int json_tokenise(char *js, size_t len,
                          struct flb_pack_state *state)
 {
@@ -83,7 +85,8 @@ static inline int is_float(char *buf, int len)
 
 /* Receive a tokenized JSON message and convert it to MsgPack */
 static char *tokens_to_msgpack(char *js,
-                               jsmntok_t *tokens, int arr_size, int *out_size)
+                               jsmntok_t *tokens, int arr_size, int *out_size,
+                               int *last_byte)
 {
     int i;
     int flen;
@@ -103,6 +106,11 @@ static char *tokens_to_msgpack(char *js,
         if (t->start == -1 || t->end == -1 || (t->start == 0 && t->end == 0)) {
             break;
         }
+
+        if (t->parent == -1) {
+            *last_byte = t->end;
+        }
+
         flen = (t->end - t->start);
 
         switch (t->type) {
@@ -182,7 +190,8 @@ int flb_pack_json(char *js, size_t len, char **buffer, int *size)
         goto flb_pack_json_end;
     }
 
-    buf = tokens_to_msgpack(js, state.tokens, state.tokens_count, &out);
+    int last;
+    buf = tokens_to_msgpack(js, state.tokens, state.tokens_count, &out, &last);
     if (!buf) {
         ret = -1;
         goto flb_pack_json_end;
@@ -209,8 +218,9 @@ int flb_pack_state_init(struct flb_pack_state *s)
         perror("calloc");
         return -1;
     }
-    s->tokens_size  = size;
-    s->tokens_count = 0;
+    s->tokens_size   = size;
+    s->tokens_count  = 0;
+    s->last_byte     = 0;
 
     return 0;
 }
@@ -220,6 +230,7 @@ void flb_pack_state_reset(struct flb_pack_state *s)
     flb_free(s->tokens);
     s->tokens_size  = 0;
     s->tokens_count = 0;
+    s->last_byte    = 0;
 }
 
 
@@ -236,6 +247,7 @@ int flb_pack_json_state(char *js, size_t len,
     int ret;
     int out;
     int delim = 0;
+    int last =  0;
     char *buf;
     jsmntok_t *t;
 
@@ -256,6 +268,7 @@ int flb_pack_json_state(char *js, size_t len,
 
         for (i = 1; i < state->tokens_size; i++) {
             t = &state->tokens[i];
+
             if (t->start < (state->tokens[i - 1]).start) {
                 break;
             }
@@ -264,6 +277,7 @@ int flb_pack_json_state(char *js, size_t len,
                 found++;
                 delim = i;
             }
+
         }
 
         if (found > 0) {
@@ -277,13 +291,14 @@ int flb_pack_json_state(char *js, size_t len,
         return ret;
     }
 
-    buf = tokens_to_msgpack(js, state->tokens, state->tokens_count, &out);
+    buf = tokens_to_msgpack(js, state->tokens, state->tokens_count, &out, &last);
     if (!buf) {
         return -1;
     }
 
     *size = out;
     *buffer = buf;
+    state->last_byte = last;
 
     return 0;
 }
@@ -317,69 +332,6 @@ static inline int try_to_write(char *buf, int *off, size_t left,
     return FLB_TRUE;
 }
 
-static inline int try_to_write_str(char *buf, int *off, size_t size,
-                                   char *str, size_t str_len)
-{
-    int i;
-    int written = 0;
-    int required;
-    size_t available;
-    char c;
-    char *p;
-
-    available = (size - *off);
-    required = str_len;
-    if (available <= required) {
-        return FLB_FALSE;
-    }
-
-    written = *off;
-    p = buf + *off;
-    for (i = 0; i < str_len; i++) {
-        if ((available - written) < 2) {
-            return FLB_FALSE;
-        }
-
-        c = str[i];
-        if (c == '\\' || c == '"') {
-            *p++ = '\\';
-            *p++ = c;
-        }
-        else if (c >= '\a' && c <= '\r') {
-            *p++ = '\\';
-            switch (c) {
-            case '\n':
-                *p++ = 'n';
-                break;
-            case '\t':
-                *p++ = 't';
-                break;
-            case '\b':
-                *p++ = 'b';
-                break;
-            case '\f':
-                *p++ = 'f';
-                break;
-            case '\r':
-                *p++ = 'r';
-                break;
-            case '\a':
-                *p++ = 'a';
-                break;
-            case '\v':
-                *p++ = 'v';
-                break;
-            }
-        }
-        else {
-            *p++ = c;
-        }
-        written = (p - (buf + *off));
-    }
-
-    *off += written;
-    return FLB_TRUE;
-}
 
 static int msgpack2json(char *buf, int *off, size_t left, msgpack_object *o)
 {
@@ -525,35 +477,23 @@ static int msgpack2json(char *buf, int *off, size_t left, msgpack_object *o)
  *  convert msgpack to JSON string.
  *  This API is similar to snprintf.
  *
- *  @param  json_str The buffer to fill JSON string.
- *  @param  json_len The size of json_str.
- *  @param  data     The msgpack_unpacked data.
- *  @return success  ? a number characters filled : negative value
+ *  @param  json_str  The buffer to fill JSON string.
+ *  @param  json_size The size of json_str.
+ *  @param  data      The msgpack_unpacked data.
+ *  @return success   ? a number characters filled : negative value
  */
-int flb_msgpack_to_json(char *json_str, size_t str_len,
-                        msgpack_unpacked *data)
+int flb_msgpack_to_json(char *json_str, size_t json_size,
+                        msgpack_object *obj)
 {
     int ret = -1;
     int off = 0;
 
-    if (json_str == NULL || data == NULL) {
+    if (json_str == NULL || obj == NULL) {
         return -1;
     }
 
-    ret = msgpack2json(json_str, &off, str_len, &data->data);
-    json_str[str_len-1] = '\0';
-    return ret ? off: ret;
-}
-
-
-int flb_msgpack_obj_to_json(char *json_str, size_t str_len,
-                            msgpack_object *obj)
-{
-    int ret;
-    int off = 0;
-
-    ret = msgpack2json(json_str, &off, str_len, obj);
-    json_str[str_len-1] = '\0';
+    ret = msgpack2json(json_str, &off, json_size, obj);
+    json_str[off] = '\0';
     return ret ? off: ret;
 }
 
@@ -564,13 +504,13 @@ int flb_msgpack_obj_to_json(char *json_str, size_t str_len,
  *  @param  data     The msgpack_unpacked data.
  *  @return success  ? allocated json str ptr : NULL
  */
-char *flb_msgpack_to_json_str(size_t size, msgpack_unpacked *data)
+char *flb_msgpack_to_json_str(size_t size, msgpack_object *obj)
 {
     int ret;
     char *buf = NULL;
     char *tmp;
 
-    if (data == NULL) {
+    if (obj == NULL) {
         return NULL;
     }
 
@@ -585,7 +525,7 @@ char *flb_msgpack_to_json_str(size_t size, msgpack_unpacked *data)
     }
 
     while (1) {
-        ret = flb_msgpack_to_json(buf, size, data);
+        ret = flb_msgpack_to_json(buf, size, obj);
         if (ret <= 0) {
             /* buffer is small. retry.*/
             size += 128;
@@ -636,7 +576,7 @@ int flb_msgpack_raw_to_json_str(char *buf, size_t buf_size,
     }
 
     while (1) {
-        ret = flb_msgpack_to_json(json_buf, json_size, &result);
+        ret = flb_msgpack_to_json(json_buf, json_size, &result.data);
         if (ret <= 0) {
             json_size += 128;
             tmp = flb_realloc(json_buf, json_size);
@@ -668,4 +608,61 @@ int flb_pack_time_now(msgpack_packer *pck)
     ret = flb_time_append_to_msgpack(&t, pck, 0);
 
     return ret;
+}
+
+int flb_msgpack_expand_map(char *map_data, size_t map_size,
+                           msgpack_object_kv **kv_arr, int kv_arr_len,
+                           char** out_buf, int* out_size)
+{
+    msgpack_sbuffer sbuf;
+    msgpack_packer  pck;
+    msgpack_unpacked result;
+    size_t off = 0;
+    char *ret_buf;
+    int map_num;
+    int i;
+    int len;
+
+    if (map_data == NULL){
+        return -1;
+    }
+
+    msgpack_unpacked_init(&result);
+    if (!(i=msgpack_unpack_next(&result, map_data, map_size, &off))){
+        return -1;
+    }
+    if (result.data.type != MSGPACK_OBJECT_MAP) {
+        msgpack_unpacked_destroy(&result);
+        return -1;
+    }
+
+    len = result.data.via.map.size;
+    map_num = kv_arr_len + len;
+
+    msgpack_sbuffer_init(&sbuf);
+    msgpack_packer_init(&pck, &sbuf, msgpack_sbuffer_write);
+    msgpack_pack_map(&pck, map_num);
+
+    for(i=0; i<len; i++) {
+        msgpack_pack_object(&pck, result.data.via.map.ptr[i].key);
+        msgpack_pack_object(&pck, result.data.via.map.ptr[i].val);
+    }
+    for(i=0; i<kv_arr_len; i++){
+        msgpack_pack_object(&pck, kv_arr[i]->key);
+        msgpack_pack_object(&pck, kv_arr[i]->val);
+    }
+    msgpack_unpacked_destroy(&result);
+
+    *out_size = sbuf.size;
+    ret_buf  = flb_malloc(sbuf.size);
+    *out_buf = ret_buf;
+    if (*out_buf == NULL) {
+        flb_errno();
+        msgpack_sbuffer_destroy(&sbuf);
+        return -1;
+    }
+    memcpy(*out_buf, sbuf.data, sbuf.size);
+    msgpack_sbuffer_destroy(&sbuf);
+
+    return 0;
 }

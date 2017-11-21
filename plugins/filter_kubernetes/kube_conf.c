@@ -24,6 +24,7 @@
 #include <fluent-bit/flb_filter.h>
 #include <fluent-bit/flb_hash.h>
 #include <fluent-bit/flb_utils.h>
+#include <fluent-bit/flb_http_client.h>
 
 #ifndef FLB_HAVE_TLS
 #error "Fluent Bit was built without TLS support"
@@ -36,6 +37,7 @@ struct flb_kube *flb_kube_conf_create(struct flb_filter_instance *i,
                                       struct flb_config *config)
 {
     int off;
+    int ret;
     char *url;
     char *tmp;
     char *p;
@@ -49,6 +51,40 @@ struct flb_kube *flb_kube_conf_create(struct flb_filter_instance *i,
     ctx->config = config;
     ctx->merge_json_log = FLB_FALSE;
     ctx->dummy_meta = FLB_FALSE;
+    ctx->tls_debug = -1;
+    ctx->tls_verify = FLB_TRUE;
+    ctx->tls_ca_path = NULL;
+
+    /* Buffer size for HTTP Client when reading responses from API Server */
+    ctx->buffer_size = (FLB_HTTP_DATA_SIZE_MAX * 8);
+    tmp = flb_filter_get_property("buffer_size", i);
+    if (tmp) {
+        if (*tmp == 'f' || *tmp == 'F' || *tmp == 'o' || *tmp == 'O') {
+            /* unlimited size ? */
+            if (flb_utils_bool(tmp) == FLB_FALSE) {
+                ctx->buffer_size = 0;
+            }
+        }
+        else {
+            ret = flb_utils_size_to_bytes(tmp);
+            if (ret == -1) {
+                flb_error("[filter_kube] invalid buffer_size=%s, using default", tmp);
+            }
+            else {
+                ctx->buffer_size = (size_t) ret;
+            }
+        }
+    }
+
+    tmp = flb_filter_get_property("tls.debug", i);
+    if (tmp) {
+        ctx->tls_debug = atoi(tmp);
+    }
+
+    tmp = flb_filter_get_property("tls.verify", i);
+    if (tmp) {
+        ctx->tls_verify = flb_utils_bool(tmp);
+    }
 
     /* Merge JSON log */
     tmp = flb_filter_get_property("merge_json_log", i);
@@ -101,14 +137,21 @@ struct flb_kube *flb_kube_conf_create(struct flb_filter_instance *i,
         }
     }
 
-    /* Kubernetes CA file */
+    /* Kubernetes TLS */
     if (ctx->api_https == FLB_TRUE) {
+        /* CA file */
         tmp = flb_filter_get_property("kube_ca_file", i);
         if (!tmp) {
             ctx->tls_ca_file = flb_strdup(FLB_KUBE_CA);
         }
         else {
             ctx->tls_ca_file = flb_strdup(tmp);
+        }
+
+        /* CA certs path */
+        tmp = flb_filter_get_property("kube_ca_path", i);
+        if (tmp) {
+            ctx->tls_ca_path = flb_strdup(tmp);
         }
     }
 
@@ -132,6 +175,15 @@ struct flb_kube *flb_kube_conf_create(struct flb_filter_instance *i,
         return NULL;
     }
 
+    /* Use Systemd Journal */
+    tmp = flb_filter_get_property("use_journal", i);
+    if (tmp) {
+        ctx->use_journal = flb_utils_bool(tmp);
+    }
+    else {
+        ctx->use_journal = FLB_FALSE;
+    }
+
     /* Merge log buffer */
     if (ctx->merge_json_log == FLB_TRUE) {
         ctx->merge_json_buf = flb_malloc(FLB_MERGE_BUF_SIZE);
@@ -151,12 +203,16 @@ struct flb_kube *flb_kube_conf_create(struct flb_filter_instance *i,
 
 void flb_kube_conf_destroy(struct flb_kube *ctx)
 {
+    if (ctx == NULL) {
+        return;
+    }
+
     if (ctx->hash_table) {
         flb_hash_destroy(ctx->hash_table);
     }
 
-    if (ctx->regex_tag) {
-        flb_regex_destroy(ctx->regex_tag);
+    if (ctx->regex) {
+        flb_regex_destroy(ctx->regex);
     }
 
     if (ctx->merge_json_log == FLB_TRUE) {
@@ -168,6 +224,7 @@ void flb_kube_conf_destroy(struct flb_kube *ctx)
     }
 
     flb_free(ctx->api_host);
+    flb_free(ctx->tls_ca_path);
     flb_free(ctx->tls_ca_file);
     flb_free(ctx->token_file);
     flb_free(ctx->token);

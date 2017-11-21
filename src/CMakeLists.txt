@@ -2,8 +2,10 @@ set(CMAKE_C_VISIBILITY_PRESET hidden)
 set(CMAKE_CXX_VISIBILITY_PRESET hidden)
 add_definitions(-DFLB_CORE=1)
 
+# Core Source
 set(src
   ${src}
+  flb_mp.c
   flb_api.c
   flb_lib.c
   flb_log.c
@@ -11,6 +13,8 @@ set(src
   flb_uri.c
   flb_hash.c
   flb_pack.c
+  flb_sds.c
+
   flb_sha1.c
   flb_pipe.c
   flb_meta.c
@@ -43,7 +47,7 @@ include_directories(
   ${extra_headers}
   )
 
-if (FLB_REGEX)
+if(FLB_REGEX)
   set(src
     ${src}
     flb_parser.c
@@ -78,6 +82,14 @@ if(FLB_STATS)
   set(src
     ${src}
     "flb_stats.c"
+    )
+endif()
+
+if(FLB_METRICS)
+  set(src
+    ${src}
+    "flb_metrics.c"
+    "flb_metrics_exporter.c"
     )
 endif()
 
@@ -146,6 +158,11 @@ if(NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
     )
 endif()
 
+# HTTP Server
+if(FLB_HTTP_SERVER)
+  add_subdirectory(http_server)
+endif()
+
 # Proxy interfaces
 add_subdirectory(proxy)
 
@@ -153,6 +170,14 @@ set(FLB_PROXY_PLUGINS "")
 if(FLB_PROXY_GO)
   set(FLB_PROXY_PLUGINS ${FLB_PROXY_PLUGINS} flb-plugin-proxy-go)
 endif()
+
+# HTTP Server
+if(FLB_HTTP_SERVER)
+  set(FLB_DEPS
+    ${FLB_DEPS}
+    flb-http-server)
+endif()
+
 
 # Set static dependencies
 set(FLB_DEPS
@@ -168,7 +193,7 @@ set(FLB_DEPS
 # Shared Library
 if(NOT FLB_WITHOUT_SHARED_LIB)
   add_library(fluent-bit-shared SHARED ${src})
-  target_link_libraries(fluent-bit-shared ${FLB_DEPS})
+  target_link_libraries(fluent-bit-shared ${FLB_DEPS} -lpthread)
   set_target_properties(fluent-bit-shared
     PROPERTIES OUTPUT_NAME fluent-bit)
 

@@ -2,7 +2,7 @@
 
 /*  Monkey HTTP Server
  *  ==================
- *  Copyright 2001-2015 Monkey Software LLC <eduardo@monkey.io>
+ *  Copyright 2001-2017 Eduardo Silva <eduardo@monkey.io>
  *
  *  Licensed under the Apache License, Version 2.0 (the "License");
  *  you may not use this file except in compliance with the License.
@@ -25,6 +25,7 @@
 
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <regex.h>
 
 #include <monkey/monkey.h>
 #include <monkey/mk_user.h>
@@ -730,16 +731,23 @@ int mk_http_init(struct mk_http_session *cs, struct mk_http_request *sr,
         handlers = &sr->host_conf->handlers;
         mk_list_foreach(head, handlers) {
             h_handler = mk_list_entry(head, struct mk_vhost_handler, _head);
-            if (regexec(&h_handler->match,
+            if (regexec(h_handler->match,
                         sr->uri_processed.data, 0, NULL, 0) != 0) {
                 continue;
             }
 
             if (h_handler->cb) {
+                /* Create coroutine/thread context */
                 sr->headers.content_length = 0;
-                h_handler->cb(sr, h_handler->data);
-                mk_header_prepare(cs, sr, server);
-                return 0;
+                mth = mk_http_thread_create(MK_HTTP_THREAD_LIB,
+                                            h_handler,
+                                            cs, sr,
+                                            0, NULL);
+                if (!mth) {
+                    return -1;
+                }
+                mk_http_thread_start(mth);
+                return MK_EXIT_OK;
             }
             else {
                 if (!h_handler->handler) {
@@ -757,16 +765,17 @@ int mk_http_init(struct mk_http_session *cs, struct mk_http_request *sr,
             MK_TRACE("[FD %i] STAGE_30 returned %i", cs->socket, ret);
             switch (ret) {
             case MK_PLUGIN_RET_CONTINUE:
+                /* FIXME: PLUGINS DISABLED
                 if ((plugin->flags & MK_PLUGIN_THREAD) &&
                     plugin->stage->stage30_thread) {
-                    mth = mk_http_thread_new(plugin, cs, sr,
+                    mth = mk_http_thread_new(MK_HTTP_THREAD_PLUGIN,
+                                             plugin, cs, sr,
                                              h_handler->n_params,
                                              &h_handler->params);
                     printf("[http thread] %p\n", mth);
                     mk_http_thread_resume(mth->parent);
-
                 }
-
+                */
                 return MK_PLUGIN_RET_CONTINUE;
             case MK_PLUGIN_RET_CLOSE_CONX:
                 if (sr->headers.status > 0) {
@@ -857,7 +866,7 @@ int mk_http_init(struct mk_http_session *cs, struct mk_http_request *sr,
         handlers = &sr->host_conf->handlers;
         mk_list_foreach(head, handlers) {
             h_handler = mk_list_entry(head, struct mk_vhost_handler, _head);
-            if (regexec(&h_handler->match,
+            if (regexec(h_handler->match,
                         uri, 0, NULL, 0) != 0) {
                 continue;
             }
@@ -1107,7 +1116,7 @@ int mk_http_request_end(struct mk_http_session *cs, struct mk_server *server)
     int ret;
     int status;
     int len;
-    struct mk_http_request *sr;
+    struct mk_http_request *sr = NULL;
 
     if (server->max_keep_alive_request <= cs->counter_connections) {
         cs->close_now = MK_TRUE;
@@ -1166,7 +1175,6 @@ int mk_http_request_end(struct mk_http_session *cs, struct mk_server *server)
         mk_sched_conn_timeout_add(cs->conn, mk_sched_get_thread_conf());
         return 0;
     }
-
 
     return -1;
 }
@@ -1375,7 +1383,8 @@ struct mk_http_session *mk_http_session_lookup(int socket)
 
 
 /* Initialize a HTTP session (just created) */
-int mk_http_session_init(struct mk_http_session *cs, struct mk_sched_conn *conn)
+int mk_http_session_init(struct mk_http_session *cs, struct mk_sched_conn *conn,
+                         struct mk_server *server)
 {
     /* Alloc memory for node */
     cs->_sched_init = MK_TRUE;
@@ -1384,6 +1393,7 @@ int mk_http_session_init(struct mk_http_session *cs, struct mk_sched_conn *conn)
     cs->close_now = MK_FALSE;
     cs->socket = conn->event.fd;
     cs->status = MK_REQUEST_STATUS_INCOMPLETE;
+    cs->server = server;
 
     /* Map the channel, just for protocol-handler internal stuff */
     cs->channel = &conn->channel;
@@ -1516,7 +1526,7 @@ int mk_http_sched_read(struct mk_sched_conn *conn,
     if (cs->_sched_init == MK_FALSE) {
         /* Create session for the client */
         MK_TRACE("[FD %i] Create HTTP session", socket);
-        ret  = mk_http_session_init(cs, conn);
+        ret  = mk_http_session_init(cs, conn, server);
         if (ret == -1) {
             return -1;
         }

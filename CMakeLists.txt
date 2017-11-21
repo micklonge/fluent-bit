@@ -12,6 +12,7 @@ endif()
 include(GNUInstallDirs)
 include(ExternalProject)
 include(cmake/FindJournald.cmake)
+include(cmake/FindMonkey.cmake)
 
 # Output paths
 set(FLB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -21,7 +22,7 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/library")
 
 # Fluent Bit Version
 set(FLB_VERSION_MAJOR  0)
-set(FLB_VERSION_MINOR 12)
+set(FLB_VERSION_MINOR 13)
 set(FLB_VERSION_PATCH  0)
 set(FLB_VERSION_STR "${FLB_VERSION_MAJOR}.${FLB_VERSION_MINOR}.${FLB_VERSION_PATCH}")
 
@@ -44,6 +45,12 @@ option(FLB_BUFFERING          "Enable buffering support"     No)
 option(FLB_POSIX_TLS          "Force POSIX thread storage"   No)
 option(FLB_WITHOUT_INOTIFY    "Disable inotify support"      No)
 option(FLB_SQLDB              "Enable SQL embedded DB"       No)
+option(FLB_HTTP_SERVER        "Enable HTTP Server"           No)
+
+# Metrics: Experimental Feature, disabled by default on 0.12 series
+# but enabled in the upcoming 0.13 release. Note that development
+# mode enable this feature.
+option(FLB_METRICS            "Enable metrics support"       No)
 
 # Proxy Plugins
 option(FLB_PROXY_GO           "Enable Go plugins support"   Yes)
@@ -65,6 +72,7 @@ option(FLB_PROXY_GO           "Enable Go plugins support"   Yes)
 # Build-in Plugins
 option(FLB_IN_CPU          "Enable CPU input plugin"            Yes)
 option(FLB_IN_DISK         "Enable Disk input plugin"           Yes)
+option(FLB_IN_EXEC         "Enable Exec input plugin"           Yes)
 option(FLB_IN_FORWARD      "Enable Forward input plugin"        Yes)
 option(FLB_IN_HEALTH       "Enable Health input plugin"         Yes)
 option(FLB_IN_HTTP         "Enable HTTP input plugin"            No)
@@ -82,6 +90,7 @@ option(FLB_IN_HEAD         "Enable Head input plugin"           Yes)
 option(FLB_IN_PROC         "Enable Process input plugin"        Yes)
 option(FLB_IN_SYSTEMD      "Enable Systemd input plugin"        Yes)
 option(FLB_IN_DUMMY        "Enable Dummy input plugin"          Yes)
+option(FLB_IN_NETIF        "Enable NetworkIF input plugin"      Yes)
 option(FLB_OUT_COUNTER     "Enable Counter output plugin"       Yes)
 option(FLB_OUT_ES          "Enable Elasticsearch output plugin" Yes)
 option(FLB_OUT_EXIT        "Enable Exit output plugin"          Yes)
@@ -97,7 +106,8 @@ option(FLB_OUT_STDOUT      "Enable STDOUT output plugin"        Yes)
 option(FLB_OUT_LIB         "Enable library mode output plugin"  Yes)
 option(FLB_OUT_NULL        "Enable dev null output plugin"      Yes)
 option(FLB_OUT_FLOWCOUNTER "Enable flowcount output plugin"     Yes)
-
+option(FLB_OUT_KAFKA       "Enable Kafka output plugin"          No)
+option(FLB_OUT_KAFKA_REST  "Enable Kafka Rest output plugin"    Yes)
 option(FLB_FILTER_GREP     "Enable grep filter"                 Yes)
 option(FLB_FILTER_STDOUT   "Enable stdout filter"               Yes)
 option(FLB_FILTER_PARSER   "Enable parser filter"               Yes)
@@ -122,6 +132,8 @@ if(FLB_ALL)
   set(FLB_IN_PROC      1)
   set(FLB_IN_DISK      1)
   set(FLB_IN_DUMMY     1)
+  set(FLB_IN_NETIF     1)
+  set(FLB_IN_EXEC      1)
 
   # Output plugins
   set(FLB_OUT_ES       1)
@@ -141,6 +153,8 @@ endif()
 if(FLB_DEV)
   set(FLB_DEBUG          On)
   set(FLB_TRACE          On)
+  set(FLB_METRICS        On)
+  set(FLB_HTTP_SERVER    On)
   set(FLB_TESTS_INTERNAL On)
 endif()
 
@@ -167,8 +181,7 @@ include_directories(
   lib/flb_libco
   lib/sha1
   lib/msgpack-2.1.3/include
-  lib/monkey/include
-  lib/monkey/mk_core/include
+  ${MONKEY_INCLUDE_DIR}
   )
 
 # On Windows, the core uses libevent
@@ -205,7 +218,11 @@ macro(MK_SET_OPTION option value)
 endmacro()
 MK_SET_OPTION(MK_SYSTEM_MALLOC      ON)
 
-add_subdirectory(lib/monkey/mk_core EXCLUDE_FROM_ALL)
+if(FLB_HTTP_SERVER)
+  add_subdirectory(lib/monkey/ EXCLUDE_FROM_ALL)
+else()
+  add_subdirectory(lib/monkey/mk_core EXCLUDE_FROM_ALL)
+endif()
 
 # SSL/TLS: add encryption support
 if(FLB_OUT_TD)
@@ -221,14 +238,19 @@ if(FLB_TLS)
   include_directories(lib/mbedtls-2.5.1/include)
 endif()
 
+# Metrics
+if(FLB_METRICS)
+  FLB_DEFINITION(FLB_HAVE_METRICS)
+endif()
+
 if(FLB_IN_TAIL)
   set(FLB_SQLDB ON)
 endif()
 
 if(FLB_SQLDB)
   FLB_DEFINITION(FLB_HAVE_SQLDB)
-  add_subdirectory(lib/sqlite-amalgamation-3190300)
-  include_directories(lib/sqlite-amalgamation-3190300)
+  add_subdirectory(lib/sqlite-amalgamation-3200000)
+  include_directories(lib/sqlite-amalgamation-3200000)
 endif()
 
 if(FLB_BUFFERING)
@@ -243,8 +265,14 @@ if(FLB_STATS)
   FLB_DEFINITION(FLB_HAVE_STATS)
 endif()
 
+if(FLB_HTTP_SERVER)
+  FLB_DEFINITION(FLB_HAVE_HTTP_SERVER)
+endif()
+
 FLB_DEFINITION(FLB_HAVE_FLUSH_LIBCO)
-add_subdirectory(lib/flb_libco)
+if(NOT TARGET co)
+  add_subdirectory(lib/flb_libco)
+endif()
 
 # Systemd Journald support
 if(JOURNALD_FOUND)

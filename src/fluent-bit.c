@@ -85,7 +85,7 @@ static void flb_help(int rc, struct flb_config *config)
     printf("  -l, --log_file=FILE\twrite log info to a file\n");
     printf("  -t, --tag=TAG\t\tset plugin tag, same as '-p tag=abc'\n");
     printf("  -v, --verbose\t\tenable verbose mode\n");
-#ifdef FLB_HAVE_HTTP
+#ifdef FLB_HAVE_HTTP_SERVER
     printf("  -H, --http\t\tenable monitoring HTTP server\n");
     printf("  -P, --port\t\tset HTTP server TCP port (default: %s)\n",
            FLB_CONFIG_HTTP_PORT);
@@ -197,6 +197,11 @@ static int input_set_property(struct flb_input_instance *in, char *kv)
     }
 
     ret = flb_input_set_property(in, key, value);
+    if (ret == -1) {
+        fprintf(stderr, "[error] setting up '%s' plugin property '%s'\n",
+                in->p->name, key);
+    }
+
     flb_free(key);
     return ret;
 }
@@ -385,7 +390,12 @@ static int flb_service_conf(struct flb_config *config, char *file)
             }
 
             /* Set the property */
-            flb_input_set_property(in, entry->key, entry->val);
+            ret = flb_input_set_property(in, entry->key, entry->val);
+            if (ret == -1) {
+                fprintf(stderr, "Error setting up %s plugin property '%s'\n",
+                        in->name, entry->key);
+                goto flb_service_conf_end;
+            }
         }
     }
 
@@ -509,6 +519,11 @@ int main(int argc, char **argv)
         { "quiet",       no_argument      , NULL, 'q' },
         { "help",        no_argument      , NULL, 'h' },
         { "sosreport",   no_argument      , NULL, 'S' },
+#ifdef FLB_HAVE_HTTP_SERVER
+        { "http_server", no_argument      , NULL, 'H' },
+        { "http_listen", required_argument, NULL, 'L' },
+        { "http_port",   required_argument, NULL, 'P' },
+#endif
         { NULL, 0, NULL, 0 }
     };
 #endif
@@ -544,7 +559,7 @@ int main(int argc, char **argv)
     }
 
     /* Parse the command line options */
-    while ((opt = getopt_long(argc, argv, "b:B:c:df:i:m:o:R:F:p:e:t:l:vqVhHP:S",
+    while ((opt = getopt_long(argc, argv, "b:B:c:df:i:m:o:R:F:p:e:t:l:vqVhL:HP:S",
                               long_opts, NULL)) != -1) {
 
         switch (opt) {
@@ -624,7 +639,10 @@ int main(int argc, char **argv)
             break;
         case 'p':
             if (last_plugin == PLUGIN_INPUT) {
-                input_set_property(in, optarg);
+                ret = input_set_property(in, optarg);
+                if (ret != 0) {
+                    exit(EXIT_FAILURE);
+                }
             }
             else if (last_plugin == PLUGIN_OUTPUT) {
                 output_set_property(out, optarg);
@@ -641,11 +659,20 @@ int main(int argc, char **argv)
         case 'h':
             flb_help(EXIT_SUCCESS, config);
             break;
-#ifdef FLB_HAVE_HTTP
+#ifdef FLB_HAVE_HTTP_SERVER
         case 'H':
             config->http_server = FLB_TRUE;
             break;
+        case 'L':
+            if (config->http_listen) {
+                flb_free(config->http_listen);
+            }
+            config->http_listen = flb_strdup(optarg);
+            break;
         case 'P':
+            if (config->http_port) {
+                flb_free(config->http_port);
+            }
             config->http_port = flb_strdup(optarg);
             break;
 #endif
@@ -665,7 +692,6 @@ int main(int argc, char **argv)
             flb_help(EXIT_FAILURE, config);
         }
     }
-
 
     if (config->verbose != FLB_LOG_OFF) {
         flb_banner();
@@ -713,6 +739,10 @@ int main(int argc, char **argv)
     }
 #endif
 
-    flb_engine_start(config);
+    ret = flb_engine_start(config);
+    if (ret == -1) {
+        flb_engine_shutdown(config);
+    }
+
     return 0;
 }

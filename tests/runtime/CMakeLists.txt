@@ -1,0 +1,75 @@
+find_package(Threads REQUIRED)
+
+include_directories(acutest/)
+
+define_property(GLOBAL PROPERTY CHECK_PROGRAMS
+  BRIEF_DOCS "Runtime Test Programs"
+  FULL_DOCS "Runtime Test Programs")
+set_property(GLOBAL PROPERTY CHECK_PROGRAMS "")
+
+# Macro to set definitions
+macro(FLB_RT_TEST BUILT src)
+  if (${BUILT})
+    list(APPEND CHECK_PROGRAMS
+      ${src}
+      )
+  endif()
+endmacro()
+
+# Input Plugins
+if(FLB_OUT_LIB)
+  FLB_RT_TEST(FLB_IN_CPU           "in_cpu.c")
+  FLB_RT_TEST(FLB_IN_DUMMY         "in_dummy.c")
+  FLB_RT_TEST(FLB_IN_DISK          "in_disk.c")
+  FLB_RT_TEST(FLB_IN_HEAD          "in_head.c")
+  FLB_RT_TEST(FLB_IN_MEM           "in_mem.c")
+  FLB_RT_TEST(FLB_IN_PROC          "in_proc.c")
+  FLB_RT_TEST(FLB_IN_RANDOM        "in_random.c")
+endif()
+
+# Filter Plugins
+if(FLB_IN_LIB AND FLB_OUT_LIB)
+  FLB_RT_TEST(FLB_FILTER_STDOUT     "filter_stdout.c")
+  FLB_RT_TEST(FLB_FILTER_GREP       "filter_grep.c")
+  FLB_RT_TEST(FLB_FILTER_KUBERNETES "filter_kubernetes.c")
+endif()
+
+
+# Output Plugins
+if(FLB_IN_LIB)
+  FLB_RT_TEST(FLB_OUT_LIB          "core_engine.c")
+  FLB_RT_TEST(FLB_OUT_COUNTER      "out_counter.c")
+  FLB_RT_TEST(FLB_OUT_ES           "out_elasticsearch.c")
+  FLB_RT_TEST(FLB_OUT_EXIT         "out_exit.c")
+  FLB_RT_TEST(FLB_OUT_FILE         "out_file.c")
+  FLB_RT_TEST(FLB_OUT_FLOWCOUNTER  "out_flowcounter.c")
+  FLB_RT_TEST(FLB_OUT_FORWARD      "out_forward.c")
+  FLB_RT_TEST(FLB_OUT_NULL         "out_null.c")
+  FLB_RT_TEST(FLB_OUT_PLOT         "out_plot.c")
+  FLB_RT_TEST(FLB_OUT_RETRY        "out_retry.c")
+  FLB_RT_TEST(FLB_OUT_STDOUT       "out_stdout.c")
+  FLB_RT_TEST(FLB_OUT_TD           "out_td.c")
+endif()
+
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/flb_tests_runtime.h.in"
+  "${CMAKE_CURRENT_SOURCE_DIR}/flb_tests_runtime.h"
+  )
+
+foreach(source_file ${CHECK_PROGRAMS})
+  get_filename_component(source_file_we ${source_file} NAME_WE)
+  set(source_file_we flb-rt-${source_file_we})
+  add_executable(
+    ${source_file_we}
+    ${source_file}
+    )
+  target_link_libraries(${source_file_we}
+    fluent-bit-static
+    ${CMAKE_THREAD_LIBS_INIT}
+    )
+  add_test(${source_file_we} ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${source_file_we})
+  if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang" OR
+      "${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+    set_property(TARGET ${source_file_we} APPEND_STRING PROPERTY COMPILE_FLAGS "-Wall -g -O3")
+  endif()
+endforeach()

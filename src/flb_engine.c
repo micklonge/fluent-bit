@@ -41,6 +41,11 @@
 #include <fluent-bit/flb_scheduler.h>
 #include <fluent-bit/flb_parser.h>
 #include <fluent-bit/flb_sosreport.h>
+#include <fluent-bit/flb_http_server.h>
+
+#ifdef FLB_HAVE_METRICS
+#include <fluent-bit/flb_metrics_exporter.h>
+#endif
 
 #ifdef FLB_HAVE_BUFFERING
 #include <fluent-bit/flb_buffer_chunk.h>
@@ -186,6 +191,11 @@ static inline int flb_engine_manager(flb_pipefd_t fd, struct flb_config *config)
                     flb_buffer_chunk_pop(config->buffer_ctx, thread_id, task);
                 }
 #endif
+
+#ifdef FLB_HAVE_METRICS
+                flb_metrics_sum(FLB_METRIC_OUT_RETRY_FAILED, 1,
+                                out_th->o_ins->metrics);
+#endif
                 /* Notify about this failed retry */
                 flb_warn("[engine] Task cannot be retried: "
                          "task_id=%i thread_id=%i output=%s",
@@ -198,6 +208,10 @@ static inline int flb_engine_manager(flb_pipefd_t fd, struct flb_config *config)
 
                 return 0;
             }
+
+#ifdef FLB_HAVE_METRICS
+            flb_metrics_sum(FLB_METRIC_OUT_RETRY, 1, out_th->o_ins->metrics);
+#endif
 
             /* Always destroy the old thread */
             flb_output_thread_destroy_id(thread_id, task);
@@ -289,6 +303,14 @@ static FLB_INLINE int flb_engine_handle_event(flb_pipefd_t fd, int mask,
         if (ret != -1) {
             return ret;
         }
+
+        /* Metrics exporter event ? */
+#ifdef FLB_HAVE_METRICS
+        ret = flb_me_fd_event(fd, config->metrics);
+        if (ret != -1) {
+            return ret;
+        }
+#endif
     }
 
     return 0;
@@ -303,8 +325,27 @@ static int flb_engine_started(struct flb_config *config)
         return -1;
     }
 
-    val = FLB_ENGINE_EV_STARTED;
+    val = FLB_ENGINE_STARTED;
     return flb_pipe_w(config->ch_notif[1], &val, sizeof(uint64_t));
+}
+
+int flb_engine_failed(struct flb_config *config)
+{
+    int ret;
+    uint64_t val;
+
+    /* Check the channel is valid (enabled by library mode) */
+    if (config->ch_notif[1] <= 0) {
+        return -1;
+    }
+
+    val = FLB_ENGINE_FAILED;
+    ret = flb_pipe_w(config->ch_notif[1], &val, sizeof(uint64_t));
+    if (ret == -1) {
+        flb_error("[engine] fail to dispatch FAILED message");
+    }
+
+    return ret;
 }
 
 static int flb_engine_log_start(struct flb_config *config)
@@ -375,7 +416,7 @@ int flb_engine_start(struct flb_config *config)
                                   config);
     if (ret != 0) {
         flb_error("[engine] could not create manager channels");
-        exit(EXIT_FAILURE);
+        return -1;
     }
 
     /* Initialize input plugins */
@@ -387,7 +428,6 @@ int flb_engine_start(struct flb_config *config)
     /* Initialize output plugins */
     ret = flb_output_init(config);
     if (ret == -1 && config->support_mode == FLB_FALSE) {
-        flb_engine_shutdown(config);
         return -1;
     }
 
@@ -407,12 +447,10 @@ int flb_engine_start(struct flb_config *config)
         flb_utils_error(FLB_ERR_CFG_FLUSH_CREATE);
     }
 
-
     /* Initialize the scheduler */
     ret = flb_sched_init(config);
     if (ret == -1) {
         flb_error("[engine] scheduler could not start");
-        flb_engine_shutdown(config);
         return -1;
     }
 
@@ -425,6 +463,7 @@ int flb_engine_start(struct flb_config *config)
     /* Prepare routing paths */
     ret = flb_router_io_set(config);
     if (ret == -1) {
+        flb_error("[engine] router failed");
         return -1;
     }
 
@@ -458,9 +497,22 @@ int flb_engine_start(struct flb_config *config)
         exit(1);
     }
 
+    /* Initialize Metrics exporter */
+#ifdef FLB_HAVE_METRICS
+    config->metrics = flb_me_create(config);
+#endif
+
+    /* Initialize HTTP Server */
+#ifdef FLB_HAVE_HTTP_SERVER
+    if (config->http_server == FLB_TRUE) {
+        config->http_ctx = flb_hs_create(config->http_listen, config->http_port,
+                                         config);
+        flb_hs_start(config->http_ctx);
+    }
+#endif
+
     /* Signal that we have started */
     flb_engine_started(config);
-
 
     while (1) {
         mk_event_wait(evl);
@@ -537,6 +589,19 @@ int flb_engine_shutdown(struct flb_config *config)
     flb_filter_exit(config);
     flb_input_exit_all(config);
     flb_output_exit(config);
+
+    /* metrics */
+#ifdef FLB_HAVE_METRICS
+    if (config->metrics) {
+        flb_me_destroy(config->metrics);
+    }
+#endif
+
+#ifdef FLB_HAVE_HTTP_SERVER
+    if (config->http_server == FLB_TRUE) {
+        flb_hs_destroy(config->http_ctx);
+    }
+#endif
 
     flb_config_exit(config);
 

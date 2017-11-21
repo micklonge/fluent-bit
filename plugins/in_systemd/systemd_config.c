@@ -20,7 +20,10 @@
 #include <fluent-bit/flb_info.h>
 #include <fluent-bit/flb_config.h>
 #include <fluent-bit/flb_input.h>
+#include <fluent-bit/flb_utils.h>
 
+#include <sys/types.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "systemd_db.h"
@@ -31,6 +34,7 @@ struct flb_systemd_config *flb_systemd_config_create(struct flb_input_instance *
 {
     int ret;
     char *tmp;
+    struct stat st;
     struct mk_list *head;
     struct flb_config_prop *prop;
     struct flb_systemd_config *ctx;
@@ -42,8 +46,45 @@ struct flb_systemd_config *flb_systemd_config_create(struct flb_input_instance *
         return NULL;
     }
 
+    /* Create the channel manager */
+    ret = pipe(ctx->ch_manager);
+    if (ret == -1) {
+        flb_errno();
+        flb_free(ctx);
+        return NULL;
+    }
+
+    /* Config: path */
+    tmp = flb_input_get_property("path", i_ins);
+    if (tmp) {
+        ret = stat(tmp, &st);
+        if (ret == -1) {
+            flb_errno();
+            flb_free(ctx);
+            flb_error("[in_systemd] given path %s is invalid", tmp);
+            return NULL;
+        }
+
+        if (!S_ISDIR(st.st_mode)) {
+            flb_errno();
+            flb_free(ctx);
+            flb_error("[in_systemd] given path is not a directory: %s", tmp);
+            return NULL;
+        }
+
+        ctx->path = flb_strdup(tmp);
+    }
+    else {
+        ctx->path = NULL;
+    }
+
     /* Open the Journal */
-    ret = sd_journal_open(&ctx->j, SD_JOURNAL_LOCAL_ONLY);
+    if (ctx->path) {
+        ret = sd_journal_open_directory(&ctx->j, ctx->path, 0);
+    }
+    else {
+        ret = sd_journal_open(&ctx->j, SD_JOURNAL_LOCAL_ONLY);
+    }
     if (ret != 0) {
         flb_free(ctx);
         flb_error("[in_systemd] could not open the Journal");
@@ -87,12 +128,24 @@ struct flb_systemd_config *flb_systemd_config_create(struct flb_input_instance *
             continue;
         }
 
+        flb_debug("[in_systemd] add filter: %s", prop->val);
+
         /* Apply filter/match */
         sd_journal_add_match(ctx->j, prop->val, 0);
+        sd_journal_add_disjunction(ctx->j);
     }
 
-    /* Always seek to head */
-    sd_journal_seek_head(ctx->j);
+    /* Seek to head by default or tail if specified in configuration */
+    tmp = flb_input_get_property("read_from_tail", i_ins);
+    if (tmp != NULL && flb_utils_bool(tmp)) {
+        sd_journal_seek_tail(ctx->j);
+
+        /* Skip last entry */
+        sd_journal_next_skip(ctx->j, 1);
+    }
+    else {
+        sd_journal_seek_head(ctx->j);
+    }
 
     /* Check if we have a cursor in our database */
     if (ctx->db) {
@@ -101,6 +154,9 @@ struct flb_systemd_config *flb_systemd_config_create(struct flb_input_instance *
             ret = sd_journal_seek_cursor(ctx->j, tmp);
             if (ret == 0) {
                 flb_info("[in_systemd] seek_cursor=%.40s... OK", tmp);
+
+                /* Skip the first entry, already processed */
+                sd_journal_next_skip(ctx->j, 1);
             }
             else {
                 flb_warn("[in_systemd] seek_cursor failed");
@@ -119,9 +175,16 @@ int flb_systemd_config_destroy(struct flb_systemd_config *ctx)
         sd_journal_close(ctx->j);
     }
 
+    if (ctx->path) {
+        flb_free(ctx->path);
+    }
+
     if (ctx->db) {
         flb_systemd_db_close(ctx->db);
     }
+
+    close(ctx->ch_manager[0]);
+    close(ctx->ch_manager[1]);
 
     flb_free(ctx);
     return 0;

@@ -31,6 +31,7 @@
 int cb_nats_init(struct flb_output_instance *ins, struct flb_config *config,
                    void *data)
 {
+    int io_flags;
     struct flb_upstream *upstream;
     struct flb_out_nats_config *ctx;
 
@@ -47,6 +48,11 @@ int cb_nats_init(struct flb_output_instance *ins, struct flb_config *config,
     if (!ctx) {
         perror("malloc");
         return -1;
+    }
+
+    io_flags = FLB_IO_TCP;
+    if (ins->host.ipv6 == FLB_TRUE) {
+        io_flags |= FLB_IO_IPV6;
     }
 
     /* Prepare an upstream handler */
@@ -166,15 +172,13 @@ void cb_nats_flush(void *data, size_t bytes,
     }
 
     /* Before to flush the content check if we need to start the handshake */
-    if (u_conn->fd <= 0) {
-        ret = flb_io_net_write(u_conn,
-                               NATS_CONNECT,
-                               sizeof(NATS_CONNECT) - 1,
-                               &bytes_sent);
-        if (ret == -1) {
-            flb_upstream_conn_release(u_conn);
-            FLB_OUTPUT_RETURN(FLB_RETRY);
-        }
+    ret = flb_io_net_write(u_conn,
+                           NATS_CONNECT,
+                           sizeof(NATS_CONNECT) - 1,
+                           &bytes_sent);
+    if (ret == -1) {
+        flb_upstream_conn_release(u_conn);
+        FLB_OUTPUT_RETURN(FLB_RETRY);
     }
 
     /* Convert original Fluent Bit MsgPack format to JSON */

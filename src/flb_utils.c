@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <ctype.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -33,6 +34,7 @@
 #include <fluent-bit/flb_input.h>
 #include <fluent-bit/flb_output.h>
 #include <fluent-bit/flb_utils.h>
+#include <fluent-bit/flb_utf8.h>
 
 void flb_utils_error(int err)
 {
@@ -304,29 +306,67 @@ int flb_utils_pipe_byte_consume(flb_pipefd_t fd)
     return 0;
 }
 
-size_t flb_utils_size_to_bytes(char *size)
+ssize_t flb_utils_size_to_bytes(char *size)
 {
+    int i;
     int len;
+    int plen = 0;
     size_t val;
+    char c;
+    char tmp[3] = {0};
+    int64_t KB = 1000;
+    int64_t MB = 1000 * KB;
+    int64_t GB = 1000 * MB;
+
+    if (!size) {
+        return -1;
+    }
 
     len = strlen(size);
     val = atoll(size);
 
-    /* Kilo bytes to bytes */
-    if (size[len - 1] == 'k' || size[len - 1] == 'K') {
-        return (val * 1024);
+    if (len == 0) {
+        return -1;
     }
-    else if (size[len - 1] == 'B' || size[len - 1] == 'b') {
-        switch (size[len - 2]) {
-        case 'M':
-        case 'm':
-            return (val * 1024 * 1024);
-        case 'G':
-        case 'g':
-            return (val * 1024 * 1024 * 1024);
-        default:
+
+    for (i = len - 1; i > 0; i--) {
+        if (isdigit(size[i])) {
+            break;
+        }
+        else {
+            plen++;
+        }
+    }
+
+    if (plen == 0) {
+        return val;
+    }
+    else if (plen > 2) {
+        return -1;
+    }
+
+    for (i = 0; i < plen; i++) {
+        c = size[(len - plen) + i];
+        tmp[i] = toupper(c);
+    }
+
+    if (plen == 2) {
+        if (tmp[1] != 'B') {
             return -1;
         }
+    }
+
+    if (tmp[0] == 'K') {
+        return (val * KB);
+    }
+    else if (tmp[0] == 'M') {
+        return (val * MB);
+    }
+    else if (tmp[0] == 'G') {
+        return (val * GB);
+    }
+    else {
+        return -1;
     }
 
     return val;
@@ -427,4 +467,195 @@ void flb_utils_bytes_to_human_readable_size(size_t bytes,
         float fsize = (float) ((double) bytes / (u / 1024));
         snprintf(out_buf, size, "%.1f%s", fsize, __units[i]);
     }
+}
+
+
+static inline void encoded_to_buf(char *out, char *in, int len)
+{
+    int i;
+    char *p = out;
+
+    for (i = 0; i < len; i++) {
+        *p++ = in[i];
+    }
+}
+
+/*
+ * Write string pointed by 'str' to the destination buffer 'buf'. It's make sure
+ * to escape sepecial characters and convert utf-8 byte characters to string
+ * representation.
+ */
+int flb_utils_write_str(char *buf, int *off, size_t size,
+                        char *str, size_t str_len)
+{
+    int i;
+    int b;
+    int ret;
+    int written = 0;
+    int required;
+    int len;
+    int hex_bytes;
+    uint32_t codepoint;
+    uint32_t state = 0;
+    char tmp[16];
+    size_t available;
+    uint32_t c;
+    char *p;
+    uint8_t *s;
+
+    available = (size - *off);
+    required = str_len;
+    if (available <= required) {
+        return FLB_FALSE;
+    }
+
+    written = *off;
+    p = buf + *off;
+    for (i = 0; i < str_len; i++) {
+        if ((available - written) < 2) {
+            return FLB_FALSE;
+        }
+
+        c = (uint32_t) str[i];
+        if (c == '\\' || c == '"') {
+            *p++ = '\\';
+            *p++ = c;
+        }
+        else if (c >= '\a' && c <= '\r') {
+            *p++ = '\\';
+            switch (c) {
+            case '\n':
+                *p++ = 'n';
+                break;
+            case '\t':
+                *p++ = 't';
+                break;
+            case '\b':
+                *p++ = 'b';
+                break;
+            case '\f':
+                *p++ = 'f';
+                break;
+            case '\r':
+                *p++ = 'r';
+                break;
+            case '\a':
+                *p++ = 'a';
+                break;
+            case '\v':
+                *p++ = 'v';
+                break;
+            }
+        }
+        else if (c < 32 || c == 0x7f) {
+            if ((available - written) < 6) {
+                return FLB_FALSE;
+            }
+            len = snprintf(tmp, sizeof(tmp) - 1, "\\u%.4hhx", (unsigned char) c);
+            encoded_to_buf(p, tmp, len);
+            p += len;
+        }
+        else if (c >= 0x80 && c <= 0xFFFF) {
+            hex_bytes = flb_utf8_len(str + i);
+            if ((available - written) < (2 + hex_bytes)) {
+                return FLB_FALSE;
+            }
+
+            state = FLB_UTF8_ACCEPT;
+            codepoint = 0;
+            for (b = 0; b < hex_bytes; b++) {
+                s = (unsigned char *) str + i + b;
+                ret = flb_utf8_decode(&state, &codepoint, *s);
+                if (ret == 0) {
+                    break;
+                }
+            }
+
+            if (state != FLB_UTF8_ACCEPT) {
+                /* Invalid UTF-8 hex, just skip utf-8 bytes */
+                break;
+            }
+            else {
+                len = snprintf(tmp, sizeof(tmp) - 1, "\\u%.4x", codepoint);
+                encoded_to_buf(p, tmp, len);
+                p += len;
+            }
+            i += (hex_bytes - 1);
+        }
+        else if (c > 0xFFFF) {
+            hex_bytes = flb_utf8_len(str + i);
+            if ((available - written) < (4 + hex_bytes)) {
+                return FLB_FALSE;
+            }
+
+            state = FLB_UTF8_ACCEPT;
+            codepoint = 0;
+            for (b = 0; b < hex_bytes; b++) {
+                s = (unsigned char *) str + i + b;
+                ret = flb_utf8_decode(&state, &codepoint, *s);
+                if (ret == 0) {
+                    break;
+                }
+            }
+
+            if (state != FLB_UTF8_ACCEPT) {
+                /* Invalid UTF-8 hex, just skip utf-8 bytes */
+                flb_warn("[pack] invalid UTF-8 bytes, skipping");
+                break;
+            }
+            else {
+                len = snprintf(tmp, sizeof(tmp) - 1, "\\u%04x", codepoint);
+                encoded_to_buf(p, tmp, len);
+                p += len;
+            }
+            i += (hex_bytes - 1);
+        }
+        else {
+            *p++ = c;
+        }
+        written = (p - (buf + *off));
+    }
+
+    *off += written;
+    return FLB_TRUE;
+}
+
+
+int flb_utils_write_str_buf(char *str, size_t str_len, char **out, size_t *out_size)
+{
+    int ret;
+    int off;
+    char *tmp;
+    char *buf;
+    size_t s;
+
+    s = str_len + 1;
+    buf = flb_malloc(s);
+    if (!buf) {
+        flb_errno();
+        return -1;
+    }
+
+    while (1) {
+        off = 0;
+        ret = flb_utils_write_str(buf, &off, s, str, str_len);
+        if (ret == FLB_FALSE) {
+            s += 256;
+            tmp = flb_realloc(buf, s);
+            if (!tmp) {
+                flb_errno();
+                flb_free(buf);
+                return -1;
+            }
+            buf = tmp;
+        }
+        else {
+            /* done */
+            break;
+        }
+    }
+
+    *out = buf;
+    *out_size = off;
+    return 0;
 }

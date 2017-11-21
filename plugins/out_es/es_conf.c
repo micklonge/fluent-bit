@@ -19,6 +19,8 @@
 
 #include <fluent-bit/flb_info.h>
 #include <fluent-bit/flb_mem.h>
+#include <fluent-bit/flb_utils.h>
+#include <fluent-bit/flb_http_client.h>
 
 #include "es.h"
 #include "es_conf.h"
@@ -42,7 +44,8 @@ struct flb_elasticsearch *flb_es_conf_create(struct flb_output_instance *ins,
                                              struct flb_config *config)
 {
 
-    int io_type;
+    int io_flags = 0;
+    ssize_t ret;
     char *tmp;
     struct flb_uri *uri = ins->host.uri;
     struct flb_uri_field *f_index = NULL;
@@ -75,17 +78,21 @@ struct flb_elasticsearch *flb_es_conf_create(struct flb_output_instance *ins,
 
     /* use TLS ? */
     if (ins->use_tls == FLB_TRUE) {
-        io_type = FLB_IO_TLS;
+        io_flags = FLB_IO_TLS;
     }
     else {
-        io_type = FLB_IO_TCP;
+        io_flags = FLB_IO_TCP;
+    }
+
+    if (ins->host.ipv6 == FLB_TRUE) {
+        io_flags |= FLB_IO_IPV6;
     }
 
     /* Prepare an upstream handler */
     upstream = flb_upstream_create(config,
                                    ins->host.name,
                                    ins->host.port,
-                                   io_type,
+                                   io_flags,
                                    &ins->tls);
     if (!upstream) {
         flb_error("[out_es] cannot create Upstream context");
@@ -96,7 +103,7 @@ struct flb_elasticsearch *flb_es_conf_create(struct flb_output_instance *ins,
     /* Set manual Index and Type */
     ctx->u = upstream;
     if (f_index) {
-        ctx->index = f_index->value;
+        ctx->index = flb_strdup(f_index->value);
     }
     else {
         tmp = flb_output_get_property("index", ins);
@@ -109,7 +116,7 @@ struct flb_elasticsearch *flb_es_conf_create(struct flb_output_instance *ins,
     }
 
     if (f_type) {
-        ctx->type = f_type->value;
+        ctx->type = flb_strdup(f_type->value);
     }
     else {
         tmp = flb_output_get_property("type", ins);
@@ -215,6 +222,26 @@ struct flb_elasticsearch *flb_es_conf_create(struct flb_output_instance *ins,
         else {
             ctx->tag_key = flb_strdup(FLB_ES_DEFAULT_TAG_KEY);
             ctx->tag_key_len = sizeof(FLB_ES_DEFAULT_TAG_KEY) - 1;
+        }
+    }
+
+    ctx->buffer_size = FLB_HTTP_DATA_SIZE_MAX;
+    tmp = flb_output_get_property("buffer_size", ins);
+    if (tmp) {
+        if (*tmp == 'f' || *tmp == 'F' || *tmp == 'o' || *tmp == 'O') {
+            /* unlimited size ? */
+            if (flb_utils_bool(tmp) == FLB_FALSE) {
+                ctx->buffer_size = 0;
+            }
+        }
+        else {
+            ret = flb_utils_size_to_bytes(tmp);
+            if (ret == -1) {
+                flb_error("[out_es] invalid buffer_size=%s, using default", tmp);
+            }
+            else {
+                ctx->buffer_size = (size_t) ret;
+            }
         }
     }
 

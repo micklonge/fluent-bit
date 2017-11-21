@@ -376,7 +376,8 @@ int flb_buffer_chunk_add(struct flb_buffer_worker *worker,
     struct stat st;
 
     /* Read the expected chunk reference */
-    ret = flb_pipe_r(worker->ch_add[0], &chunk, sizeof(struct flb_buffer_chunk));
+    ret = flb_pipe_read_all(worker->ch_add[0], &chunk,
+                            sizeof(struct flb_buffer_chunk));
     if (ret <= 0) {
         flb_errno();
         return -1;
@@ -441,17 +442,18 @@ int flb_buffer_chunk_add(struct flb_buffer_worker *worker,
 
     /* Unlock and close */
     flock(fd, LOCK_UN);
-    fclose(f);
 
     /* Double check target file */
-    ret = stat(target, &st);
+    ret = fstat(fd, &st);
     if (ret == -1) {
         fprintf(stderr, "[buffer] chunk check failed %lu/%lu bytes",
                 st.st_size, chunk.size);
+        fclose(f);
         flb_free(fchunk);
         return -1;
     }
 
+    fclose(f);
     *filename = fchunk;
     return chunk.routes;
 }
@@ -554,7 +556,8 @@ int flb_buffer_chunk_delete_ref(struct flb_buffer_worker *worker,
     struct flb_output_instance *o_ins;
 
     /* Read the expected chunk reference */
-    ret = flb_pipe_r(worker->ch_del_ref[0], &chunk, sizeof(struct flb_buffer_chunk));
+    ret = flb_pipe_read_all(worker->ch_del_ref[0], &chunk,
+                            sizeof(struct flb_buffer_chunk));
     if (ret <= 0) {
         flb_errno();
         return FLB_BUFFER_ERROR;

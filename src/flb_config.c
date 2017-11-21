@@ -35,6 +35,7 @@
 #include <fluent-bit/flb_kernel.h>
 #include <fluent-bit/flb_worker.h>
 #include <fluent-bit/flb_scheduler.h>
+#include <fluent-bit/flb_http_server.h>
 
 int flb_regex_init();
 
@@ -59,10 +60,13 @@ struct flb_service_config service_configs[] = {
      FLB_CONF_TYPE_STR,
      offsetof(struct flb_config, log)},
 
-#ifdef FLB_HAVE_HTTP
-    {FLB_CONF_STR_HTTP_MONITOR,
+#ifdef FLB_HAVE_HTTP_SERVER
+    {FLB_CONF_STR_HTTP_SERVER,
      FLB_CONF_TYPE_BOOL,
      offsetof(struct flb_config, http_server)},
+    {FLB_CONF_STR_HTTP_LISTEN,
+     FLB_CONF_TYPE_STR,
+     offsetof(struct flb_config, http_listen)},
 
     {FLB_CONF_STR_HTTP_PORT,
      FLB_CONF_TYPE_STR,
@@ -106,8 +110,10 @@ struct flb_config *flb_config_init()
     config->kernel       = flb_kernel_info();
     config->verbose      = 3;
 
-#ifdef FLB_HAVE_HTTP
+#ifdef FLB_HAVE_HTTP_SERVER
+    config->http_ctx     = NULL;
     config->http_server  = FLB_FALSE;
+    config->http_listen  = flb_strdup(FLB_CONFIG_HTTP_LISTEN);
     config->http_port    = flb_strdup(FLB_CONFIG_HTTP_PORT);
 #endif
 
@@ -242,7 +248,11 @@ void flb_config_exit(struct flb_config *config)
     /* Release scheduler */
     flb_sched_exit(config);
 
-#ifdef FLB_HAVE_HTTP
+#ifdef FLB_HAVE_HTTP_SERVER
+    if (config->http_listen) {
+        flb_free(config->http_listen);
+    }
+
     if (config->http_port) {
         flb_free(config->http_port);
     }
@@ -344,7 +354,7 @@ int flb_config_set_property(struct flb_config *config,
             else if (!strncasecmp(key, FLB_CONF_STR_PARSERS_FILE, 32)) {
 #ifdef FLB_HAVE_REGEX
                 tmp = flb_env_var_translate(config->env, v);
-                flb_parser_conf_file(tmp, config);
+                ret = flb_parser_conf_file(tmp, config);
 #endif
             }
             else {
@@ -377,7 +387,6 @@ int flb_config_set_property(struct flb_config *config,
                 if (tmp) {
                     flb_free(tmp);
                 }
-                flb_error("config parameter error");
                 return -1;
             }
             return 0;

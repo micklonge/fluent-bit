@@ -35,7 +35,7 @@ struct flb_tail_file {
     off_t offset;
     off_t last_line;
     ino_t inode;
-    char *name;
+    char *name;                 /* target file name */
     size_t name_len;
     time_t rotated;
     off_t pending_bytes;
@@ -58,6 +58,18 @@ struct flb_tail_file {
     off_t buf_len;
     size_t buf_size;
     char *buf_data;
+
+    /*
+     * Long-lines handling: this flag is enabled when a previous line was
+     * too long and the buffer did not contain a \n, so when reaching the
+     * missing \n, skip that content and move forward.
+     *
+     * This flag is only set when Skip_Long_Lines is On.
+     */
+    int skip_next;
+
+    /* Did the plugin already warn the user about long lines ? */
+    int skip_warn;
 
     /* Opaque data type for specific fs-event backend data */
     void *fs_backend;

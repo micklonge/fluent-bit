@@ -43,6 +43,8 @@ static char *influxdb_format(char *tag, int tag_len,
     uint64_t seq = 0;
     size_t off = 0;
     char *buf;
+    char *str = NULL;
+    size_t str_size;
     char tmp[128];
     msgpack_unpacked result;
     msgpack_object root;
@@ -50,6 +52,7 @@ static char *influxdb_format(char *tag, int tag_len,
     msgpack_object *obj;
     struct flb_time tm;
     struct influxdb_bulk *bulk;
+
 
     /* Iterate the original buffer and perform adjustments */
     msgpack_unpacked_init(&result);
@@ -188,11 +191,32 @@ static char *influxdb_format(char *tag, int tag_len,
                 continue;
             }
 
+            /* is this a string ? */
+            if (quote == FLB_TRUE) {
+                ret = flb_utils_write_str_buf(val, val_len,
+                                              &str, &str_size);
+                if (ret == -1) {
+                    flb_errno();
+                    influxdb_bulk_destroy(bulk);
+                    msgpack_unpacked_destroy(&result);
+                    return NULL;
+                }
+
+                val = str;
+                val_len = str_size;
+            }
+
             /* Append key/value data into the bulk */
             ret = influxdb_bulk_append_kv(bulk,
                                           key, key_len,
                                           val, val_len,
                                           i, quote);
+
+            if (quote == FLB_TRUE) {
+                flb_free(str);
+                str_size = 0;
+            }
+
             if (ret == -1) {
                 flb_error("[out_influxdb] cannot append key/value");
                 influxdb_bulk_destroy(bulk);
@@ -229,7 +253,7 @@ static char *influxdb_format(char *tag, int tag_len,
 int cb_influxdb_init(struct flb_output_instance *ins, struct flb_config *config,
                      void *data)
 {
-    int io_type;
+    int io_flags = 0;
     char *tmp;
     struct flb_upstream *upstream;
     struct flb_influxdb_config *ctx;
@@ -251,10 +275,10 @@ int cb_influxdb_init(struct flb_output_instance *ins, struct flb_config *config,
     }
 
     if (ins->use_tls == FLB_TRUE) {
-        io_type = FLB_IO_TLS;
+        io_flags = FLB_IO_TLS;
     }
     else {
-        io_type = FLB_IO_TCP;
+        io_flags = FLB_IO_TCP;
     }
 
     /* database */
@@ -279,11 +303,15 @@ int cb_influxdb_init(struct flb_output_instance *ins, struct flb_config *config,
 
     snprintf(ctx->uri, sizeof(ctx->uri) - 1, "/write?db=%s&precision=n", ctx->db_name);
 
+    if (ins->host.ipv6 == FLB_TRUE) {
+        io_flags |= FLB_IO_IPV6;
+    }
+
     /* Prepare an upstream handler */
     upstream = flb_upstream_create(config,
                                    ins->host.name,
                                    ins->host.port,
-                                   io_type,
+                                   io_flags,
                                    &ins->tls);
     if (!upstream) {
         flb_free(ctx);
@@ -332,8 +360,14 @@ void cb_influxdb_flush(void *data, size_t bytes,
 
     ret = flb_http_do(c, &b_sent);
     if (ret == 0) {
-        flb_debug("[out_influxdb] http_do=%i http_status=%i",
-                  ret, c->resp.status);
+        if (c->resp.payload_size > 0) {
+            flb_debug("[out_influxdb] http_do=%i http_status=%i\n%s",
+                      ret, c->resp.status, c->resp.payload);
+        }
+        else {
+            flb_debug("[out_influxdb] http_do=%i http_status=%i",
+                      ret, c->resp.status);
+        }
     }
     else {
         flb_debug("[out_influxdb] http_do=%i", ret);

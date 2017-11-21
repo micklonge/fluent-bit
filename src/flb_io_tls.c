@@ -72,23 +72,25 @@ static inline int io_tls_event_switch(struct flb_upstream_conn *u_conn,
 }
 
 struct flb_tls_context *flb_tls_context_new(int verify,
+                                            int debug,
+                                            char *ca_path,
                                             char *ca_file, char *crt_file,
                                             char *key_file, char *key_passwd)
 {
     int ret;
     struct flb_tls_context *ctx;
 
-    ctx = flb_malloc(sizeof(struct flb_tls_context));
+    ctx = flb_calloc(1, sizeof(struct flb_tls_context));
     if (!ctx) {
         perror("malloc");
         return NULL;
     }
     ctx->verify    = verify;
+    ctx->debug     = debug;
     ctx->certs_set = 0;
 
     mbedtls_entropy_init(&ctx->entropy);
     mbedtls_ctr_drbg_init(&ctx->ctr_drbg);
-
     ret = mbedtls_ctr_drbg_seed(&ctx->ctr_drbg,
                                 mbedtls_entropy_func,
                                 &ctx->entropy,
@@ -99,34 +101,46 @@ struct flb_tls_context *flb_tls_context_new(int verify,
         goto error;
     }
 
-    /* Load root certificates */
-    if (!ca_file) {
-        ca_file = "/etc/ssl/certs/ca-certificates.crt";
-    }
+    /* CA (Certificate Authority) */
     mbedtls_x509_crt_init(&ctx->ca_cert);
-    ret = mbedtls_x509_crt_parse_file(&ctx->ca_cert, ca_file);
-    if (ret < 0) {
-        char tmp[1024];
-        mbedtls_strerror(ret, tmp, 1024);
-        flb_error("[TLS] Invalid CA file: %s | %s", ca_file, tmp);
-        goto error;
+    if (ca_file) {
+        ret = mbedtls_x509_crt_parse_file(&ctx->ca_cert, ca_file);
+        if (ret < 0) {
+            io_tls_error(ret);
+            flb_error("[TLS] Invalid CA file: %s", ca_file);
+            goto error;
+        }
+    }
+    else {
+        if (!ca_path) {
+            ca_path = "/etc/ssl/certs/";
+        }
+        ret = mbedtls_x509_crt_parse_path(&ctx->ca_cert, ca_path);
+        if (ret < 0) {
+            io_tls_error(ret);
+            goto error;
+        }
     }
     ctx->certs_set |= FLB_TLS_CA_ROOT;
 
+    /* Certificate file */
     if (crt_file) {
         mbedtls_x509_crt_init(&ctx->cert);
         ret = mbedtls_x509_crt_parse_file(&ctx->cert, crt_file);
-        if (ret != 0) {
+        if (ret < 0) {
+            io_tls_error(ret);
             flb_error("[TLS] Invalid Certificate file: %s", crt_file);
             goto error;
         }
         ctx->certs_set |= FLB_TLS_CERT;
     }
 
+    /* Certificate key file */
     if (key_file) {
         mbedtls_pk_init(&ctx->priv_key);
         ret = mbedtls_pk_parse_keyfile(&ctx->priv_key, key_file, key_passwd);
-        if (ret != 0) {
+        if (ret < 0) {
+            io_tls_error(ret);
             flb_error("[TLS] Invalid Key file: %s", key_file);
             goto error;
         }
@@ -136,7 +150,7 @@ struct flb_tls_context *flb_tls_context_new(int verify,
     return ctx;
 
  error:
-    flb_free(ctx);
+    flb_tls_context_destroy(ctx);
     return NULL;
 }
 
@@ -157,6 +171,22 @@ void flb_tls_context_destroy(struct flb_tls_context *ctx)
     flb_free(ctx);
 }
 
+static void flb_tls_debug(void *ctx, int level,
+                          const char *file, int line,
+                          const char *str)
+{
+    int len;
+    char *p;
+    ((void) level);
+
+    len = strlen(str);
+    p = (char *) str;
+    p[len - 1] = '\0';
+
+    flb_debug("[io_tls] %s %04d: %s", file + sizeof(FLB_SOURCE_DIR) - 1,
+              line, str);
+}
+
 struct flb_tls_session *flb_tls_session_new(struct flb_tls_context *ctx)
 {
     int ret;
@@ -168,6 +198,7 @@ struct flb_tls_session *flb_tls_session_new(struct flb_tls_context *ctx)
     }
 
     mbedtls_ssl_init(&session->ssl);
+
     mbedtls_ssl_config_init(&session->conf);
     ret = mbedtls_ssl_config_defaults(&session->conf,
                                       MBEDTLS_SSL_IS_CLIENT,
@@ -180,6 +211,11 @@ struct flb_tls_session *flb_tls_session_new(struct flb_tls_context *ctx)
     mbedtls_ssl_conf_rng(&session->conf,
                          mbedtls_ctr_drbg_random,
                          &ctx->ctr_drbg);
+
+    if (ctx->debug >= 0) {
+        mbedtls_ssl_conf_dbg(&session->conf, flb_tls_debug, NULL);
+        mbedtls_debug_set_threshold(ctx->debug);
+    }
 
     if (ctx->verify == FLB_TRUE) {
         mbedtls_ssl_conf_authmode(&session->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
