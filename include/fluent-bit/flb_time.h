@@ -33,6 +33,8 @@ struct flb_time {
 #define FLB_TIME_FORCE_FMT_INT /* FIXME */
 #endif
 
+#define ONESEC_IN_NSEC 1000000000
+
 /*
    to represent eventtime of fluentd
    see also

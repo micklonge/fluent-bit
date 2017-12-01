@@ -1,10 +1,11 @@
 #include <fluent-bit/flb_output.h>
 #include <fluent-bit/flb_pack.h>
+#include <fluent-bit/flb_time.h>
 
 #include "token.h"
 #include "token_conf.h"
 
-static inline void token_pack_map_content(msgpack_packer *tmp_pck, msgpack_object map, char **source, int *source_len, char **token, int *token_len)
+static inline void token_pack_map_content(msgpack_packer *tmp_pck, msgpack_object *map, char **source, int *source_len, char **token, int *token_len)
 {
     int i;
     char *ptr_key = NULL;
@@ -12,9 +13,9 @@ static inline void token_pack_map_content(msgpack_packer *tmp_pck, msgpack_objec
     msgpack_object *k;
     msgpack_object *v;
 
-    for (i = 0; i < map.via.map.size; i++) {
-        k = &map.via.map.ptr[i].key;
-        v = &map.via.map.ptr[i].val;
+    for (i = 0; i < map->via.map.size; i++) {
+        k = &(map->via.map.ptr[i].key);
+        v = &(map->via.map.ptr[i].val);
         ptr_key = NULL;
 
         /* Store key */
@@ -71,7 +72,7 @@ static inline void token_pack_map_content(msgpack_packer *tmp_pck, msgpack_objec
          */
         if (v->type == MSGPACK_OBJECT_MAP) {
             msgpack_pack_map(tmp_pck, v->via.map.size);
-            token_pack_map_content(tmp_pck, *v, source, source_len, token, token_len);
+            token_pack_map_content(tmp_pck, v, source, source_len, token, token_len);
         }
         else {
         	if (strncmp(key_ptr, "customSource", key_size) == 0) {
@@ -131,8 +132,8 @@ void cb_token_flush(void *data, size_t bytes, char *tag, int tag_len,
 	size_t off = 0;
 	msgpack_unpacked result;
 	msgpack_object root;
-	msgpack_object map;
-	msgpack_object otime;
+	msgpack_object *map;
+	struct flb_time otime;
 	msgpack_sbuffer tmp_sbuf;
 	msgpack_packer tmp_pck;
 
@@ -198,9 +199,10 @@ void cb_token_flush(void *data, size_t bytes, char *tag, int tag_len,
 			continue;
 		}
 
-		otime = root.via.array.ptr[0];
-		map   = root.via.array.ptr[1];
-		map_size = map.via.map.size;
+		//otime = root.via.array.ptr[0];
+		//map   = root.via.array.ptr[1];
+		flb_time_pop_from_msgpack(&otime, &result, &map);
+		map_size = map->via.map.size;
 
 		/* Create temporal msgpack buffer */
 		msgpack_sbuffer_init(&tmp_sbuf);
@@ -224,7 +226,7 @@ void cb_token_flush(void *data, size_t bytes, char *tag, int tag_len,
 		key_len = strlen("createTime");
 		msgpack_pack_str(&tmp_pck, key_len);
 		msgpack_pack_str_body(&tmp_pck, "createTime", key_len);
-		msgpack_pack_uint64(&tmp_pck, otime.via.u64);
+		msgpack_pack_uint64(&tmp_pck, otime.tm.tv_sec * 1000 + otime.tm.tv_nsec * 1000 / ONESEC_IN_NSEC);
 
 		if (ctx->clusterName != NULL) {
 			key_len = strlen("clusterName");

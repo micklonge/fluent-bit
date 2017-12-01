@@ -27,8 +27,6 @@
 #include <arpa/inet.h>
 #include <string.h>
 
-#define ONESEC_IN_NSEC 1000000000
-
 static int is_valid_format(int fmt)
 {
     return (FLB_TIME_ETFMT_INT <= fmt) && (fmt < FLB_TIME_ETFMT_OTHER) ?
