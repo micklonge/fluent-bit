@@ -17,17 +17,15 @@
  *  limitations under the License.
  */
 
-#ifndef FLB_OUT_KAFKA_REST_CONF_H
-#define FLB_OUT_KAFKA_REST_CONF_H
+#ifndef FLB_FILTER_LOGFORMAT_META_H
+#define FLB_FILTER_LOGFORMAT_META_H
 
-#include <fluent-bit/flb_info.h>
-#include <fluent-bit/flb_config.h>
-#include <fluent-bit/flb_output.h>
+struct flb_logformat;
+struct flb_logformat_pod_info;
 
-#include "kafka.h"
-
-struct flb_kafka_rest *flb_kafka_rest_conf_create(struct flb_output_instance *ins,
-                                             struct flb_config *config);
-int flb_kafka_rest_conf_destroy(struct flb_kafka_rest *ctx);
-
+int flb_logformat_meta_init(struct flb_logformat *ctx, struct flb_config *config);
+int flb_logformat_meta_fetch(struct flb_logformat *ctx);
+int flb_logformat_meta_get(struct flb_logformat *ctx,
+                      char *tag, int tag_len,
+                      struct flb_logformat_pod_info *logformat_pod_info);
 #endif

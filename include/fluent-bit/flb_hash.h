@@ -56,9 +56,11 @@ struct flb_hash {
     size_t size;
     struct mk_list entries;
     struct flb_hash_table *table;
+
+    void (*value_free)(void *);
 };
 
-struct flb_hash *flb_hash_create(int evict_mode, size_t size, int max_entries);
+struct flb_hash *flb_hash_create(int evict_mode, size_t size, int max_entries, void (*value_free)(void *));
 void flb_hash_destroy(struct flb_hash *ht);
 
 int flb_hash_add(struct flb_hash *ht, char *key, int key_len,
@@ -68,5 +70,7 @@ int flb_hash_get(struct flb_hash *ht, char *key, int key_len,
 int flb_hash_get_by_id(struct flb_hash *ht, int id, char *key, char **out_buf,
                        size_t *out_size);
 int flb_hash_del(struct flb_hash *ht, char *key);
+
+void flb_hash_print(struct flb_hash *ht, void (*print)(void *));
 
 #endif

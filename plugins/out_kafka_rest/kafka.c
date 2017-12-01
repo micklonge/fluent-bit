@@ -167,7 +167,7 @@ static char *kafka_rest_format(void *data, size_t bytes,
     return json_buf;
 }
 
-static int cb_kafka_init(struct flb_output_instance *ins,
+static int cb_kafka_rest_init(struct flb_output_instance *ins,
                          struct flb_config *config,
                          void *data)
 {
@@ -176,7 +176,7 @@ static int cb_kafka_init(struct flb_output_instance *ins,
     (void) data;
     struct flb_kafka_rest *ctx;
 
-    ctx = flb_kafka_conf_create(ins, config);
+    ctx = flb_kafka_rest_conf_create(ins, config);
     if (!ctx) {
         flb_error("[out_kafka_rest] cannot initialize plugin");
         return -1;
@@ -189,7 +189,7 @@ static int cb_kafka_init(struct flb_output_instance *ins,
     return 0;
 }
 
-static void cb_kafka_flush(void *data, size_t bytes,
+static void cb_kafka_rest_flush(void *data, size_t bytes,
                            char *tag, int tag_len,
                            struct flb_input_instance *i_ins,
                            void *out_context,
@@ -270,19 +270,19 @@ static void cb_kafka_flush(void *data, size_t bytes,
     FLB_OUTPUT_RETURN(FLB_RETRY);
 }
 
-int cb_kafka_exit(void *data, struct flb_config *config)
+int cb_kafka_rest_exit(void *data, struct flb_config *config)
 {
     struct flb_kafka_rest *ctx = data;
 
-    flb_kafka_conf_destroy(ctx);
+    flb_kafka_rest_conf_destroy(ctx);
     return 0;
 }
 
 struct flb_output_plugin out_kafka_rest_plugin = {
     .name         = "kafka-rest",
     .description  = "Kafka REST Proxy",
-    .cb_init      = cb_kafka_init,
-    .cb_flush     = cb_kafka_flush,
-    .cb_exit      = cb_kafka_exit,
+    .cb_init      = cb_kafka_rest_init,
+    .cb_flush     = cb_kafka_rest_flush,
+    .cb_exit      = cb_kafka_rest_exit,
     .flags        = FLB_OUTPUT_NET | FLB_IO_OPT_TLS,
 };

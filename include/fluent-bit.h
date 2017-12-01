@@ -38,6 +38,8 @@ extern "C" {
 #include <fluent-bit/flb_output.h>
 #include <fluent-bit/flb_engine.h>
 #include <fluent-bit/flb_lib.h>
+#include <fluent-bit/flb_heap.h>
+#include <fluent-bit/flb_hash.h>
 
 #ifdef __cplusplus
 }

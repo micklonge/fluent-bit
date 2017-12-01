@@ -17,17 +17,14 @@
  *  limitations under the License.
  */
 
-#ifndef FLB_OUT_KAFKA_REST_CONF_H
-#define FLB_OUT_KAFKA_REST_CONF_H
+#ifndef FLB_FILTER_LOGFORMAT_REGEX_H
+#define FLB_FILTER_LOGFORMAT_REGEX_H
 
-#include <fluent-bit/flb_info.h>
-#include <fluent-bit/flb_config.h>
-#include <fluent-bit/flb_output.h>
+#include "logformat_conf.h"
 
-#include "kafka.h"
+#define LOGFORMAT_TAG_TO_REGEX "fb-var\\.log\\.containers\\.(?<pod_name>[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*)_(?<namespace_name>[^_]+)_(?<container_name>.+)-(?<docker_id>[a-z0-9]{64})\\.log$"
 
-struct flb_kafka_rest *flb_kafka_rest_conf_create(struct flb_output_instance *ins,
-                                             struct flb_config *config);
-int flb_kafka_rest_conf_destroy(struct flb_kafka_rest *ctx);
+struct flb_regex *flb_logformat_regex_init_tag();
+struct flb_regex *flb_logformat_regex_init_userdefined(char *regex);
 
 #endif

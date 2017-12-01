@@ -91,11 +91,18 @@ static inline void flb_hash_entry_free(struct flb_hash *ht, struct flb_hash_entr
     entry->table->count--;
     ht->total_count--;
     flb_free(entry->key);
-    flb_free(entry->val);
+    if (ht->value_free == NULL)
+    {
+    	flb_free(entry->val);
+    }
+    else
+    {
+    	(*(ht->value_free))(entry->val);
+    }
     flb_free(entry);
 }
 
-struct flb_hash *flb_hash_create(int evict_mode, size_t size, int max_entries)
+struct flb_hash *flb_hash_create(int evict_mode, size_t size, int max_entries, void (*value_free)(void *))
 {
     int i;
     struct flb_hash_table *tmp;
@@ -123,6 +130,8 @@ struct flb_hash *flb_hash_create(int evict_mode, size_t size, int max_entries)
         flb_free(ht);
         return NULL;
     }
+
+    ht->value_free = value_free;
 
     /* Initialize chains list head */
     for (i = 0; i < size; i++) {
@@ -410,4 +419,38 @@ int flb_hash_del(struct flb_hash *ht, char *key)
     flb_hash_entry_free(ht, entry);
 
     return 0;
+}
+
+void flb_hash_print(struct flb_hash *ht, void (*print)(void *))
+{
+	int i;
+
+	struct mk_list *head;
+	struct flb_hash_entry *entry = NULL;
+
+	struct flb_hash_table *table;
+
+	for (i = 0; i < ht->size; ++i) {
+		printf("%d:   ", i);
+
+		table = &ht->table[i];
+		if (table->count == 0) {
+			printf("\n");
+			continue;
+		}
+
+		mk_list_foreach(head, &table->chains) {
+			entry = mk_list_entry(head, struct flb_hash_entry, _head);
+			printf("%s(", entry->key);
+			if (print != NULL) {
+				print(entry->val);
+			} else {
+				printf("%s", entry->val);
+			}
+			printf(")   ");
+			entry = NULL;
+		}
+
+		printf("\n");
+	}
 }

@@ -17,17 +17,21 @@
  *  limitations under the License.
  */
 
-#ifndef FLB_OUT_KAFKA_REST_CONF_H
-#define FLB_OUT_KAFKA_REST_CONF_H
-
 #include <fluent-bit/flb_info.h>
-#include <fluent-bit/flb_config.h>
-#include <fluent-bit/flb_output.h>
+#include <fluent-bit/flb_regex.h>
 
-#include "kafka.h"
+#include "logformat_regex.h"
+#include "logformat_conf.h"
 
-struct flb_kafka_rest *flb_kafka_rest_conf_create(struct flb_output_instance *ins,
-                                             struct flb_config *config);
-int flb_kafka_rest_conf_destroy(struct flb_kafka_rest *ctx);
+struct flb_regex *flb_logformat_regex_init_tag()
+{
+    return flb_regex_create((unsigned char *) LOGFORMAT_TAG_TO_REGEX);
+}
 
-#endif
+struct flb_regex *flb_logformat_regex_init_userdefined(char *regex) {
+	if (regex == NULL) {
+		return NULL;
+	}
+
+	return flb_regex_create((unsigned char *) regex);
+}

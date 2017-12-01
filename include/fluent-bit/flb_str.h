@@ -57,4 +57,39 @@ static inline char *flb_strndup(const char *s, size_t n)
     return str;
 }
 
+static inline void itoa(int n,char *ptr)
+{
+	int sign;
+	char tmp;
+	char *begin = ptr;
+
+	if (n < 0) {
+		n = -n;
+		sign = -1;
+	} else {
+		sign = 1;
+	}
+
+	while (n > 0) {
+		*ptr = n % 10 + '0';
+		n = n / 10;
+		++ptr;
+	}
+
+	if (sign < 0) {
+		*ptr = '-';
+		++ptr;
+	}
+
+	*ptr = '\0';
+	--ptr;
+	while (begin < ptr) {
+		tmp = *begin;
+		*begin = *ptr;
+		*ptr = tmp;
+		++begin;
+		--ptr;
+	}
+}
+
 #endif

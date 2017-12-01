@@ -17,6 +17,8 @@
  *  limitations under the License.
  */
 
+#include <sys/time.h>
+
 #include <msgpack.h>
 #include <fluent-bit/flb_macros.h>
 #include <fluent-bit/flb_log.h>
@@ -176,4 +178,30 @@ int flb_time_pop_from_msgpack(struct flb_time *time, msgpack_unpacked *upk,
     }
 
     return 0;
+}
+
+uint64_t getCurrentMills() {
+	struct timeval currentTime;
+	gettimeofday( &currentTime, NULL );
+	return currentTime.tv_sec * 1000 + currentTime.tv_usec / 1000;
+}
+
+uint64_t getCurrentSeconds() {
+	struct timeval currentTime;
+	gettimeofday( &currentTime, NULL );
+	return currentTime.tv_sec;
+}
+
+uint64_t getOneDaySeconds() {
+	return 60 * 60 * 24;
+}
+
+int getCurrentYear() {
+	time_t t;
+	struct tm * lt;
+
+	time (&t);//获取Unix时间戳。
+	lt = localtime (&t);//转为时间结构。
+
+	return lt->tm_year+1900;
 }

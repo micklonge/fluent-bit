@@ -20,6 +20,8 @@
 #ifndef FLB_TIME_H
 #define FLB_TIME_H
 
+#include <stdint.h>
+
 #include <time.h>
 #include <msgpack.h>
 struct flb_time {
@@ -70,5 +72,12 @@ int flb_time_diff(struct flb_time *time1,
 int flb_time_append_to_msgpack(struct flb_time *tm, msgpack_packer *pk, int fmt);
 int flb_time_pop_from_msgpack(struct flb_time *time, msgpack_unpacked *upk,
                               msgpack_object **map);
+
+uint64_t getCurrentMills();
+uint64_t getCurrentSeconds();
+
+uint64_t getOneDaySeconds();
+
+int getCurrentYear();
 
 #endif /* FLB_TIME_H */

@@ -11,6 +11,7 @@ set(src
   flb_env.c
   flb_uri.c
   flb_hash.c
+  flb_heap.c
   flb_pack.c
   flb_sha1.c
   flb_pipe.c

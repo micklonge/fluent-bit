@@ -484,6 +484,11 @@ int main(int argc, char **argv)
     int opt;
     int ret;
 
+    /******************Testing***********************************/
+    //kube_test();
+    //return 0;
+    /************************************************************/
+
     /* handle plugin properties:  -1 = none, 0 = input, 1 = output */
     int last_plugin = -1;
 
