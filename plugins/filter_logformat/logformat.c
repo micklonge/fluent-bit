@@ -331,7 +331,7 @@ static struct flb_logformat_pod_info * build_tag_index(char *tag, int tag_len, v
 		hash_item->heap_item = heap_item;
 
 		flb_logformat_meta_get(ctx, tag, tag_len, hash_item->logformat_pod_info);
-		sprintf(configPath, "/data/docker/containers/%s/config.v2.json", hash_item->logformat_pod_info->dockerid);
+		sprintf(configPath, "%s/%s/config.v2.json", ctx->dockerconfig, hash_item->logformat_pod_info->dockerid);
 
 		if((fp = fopen(configPath, "r")) == NULL) {
 			flb_error("%s fail to open", configPath);

@@ -159,6 +159,19 @@ struct flb_logformat *flb_logformat_conf_create(struct flb_filter_instance *ins,
 				flb_logformat_conf_destroy(ctx);
 				return NULL;
 			}
+
+			tmp = flb_filter_get_property("DockerConfig", ins);
+			if (tmp) {
+				ctx->dockerconfig = flb_strdup(tmp);
+				if (ctx->dockerconfig == NULL) {
+					flb_logformat_conf_destroy(ctx);
+					return NULL;
+				}
+				flb_info("DockerConfig: %s", tmp);
+				ctx->dockerconfig_len = strlen(tmp);
+			} else {
+				ctx->dockerconfig = NULL;
+			}
     	} else if (strcmp(tmp, FLB_LOGFORMAT_LOG_TYPE_SYSTEM) == 0) {
     		ctx->logformat_pod_info = flb_logformat_pod_info_create();
 			if (!ctx->logformat_pod_info) {
@@ -233,6 +246,11 @@ void flb_logformat_conf_destroy(struct flb_logformat *ctx)
     if (ctx->heap != NULL) {
     	flb_heap_destroy(ctx->heap);
     }
+
+    if (ctx->dockerconfig) {
+		flb_free(ctx->dockerconfig);
+		ctx->dockerconfig = NULL;
+	}
 
     flb_free(ctx);
 }

@@ -89,6 +89,9 @@ struct flb_logformat {
     struct flb_regex *regex_tag;
     struct flb_hash *hashTable;         // key:flb_logformat_pod_info
     struct flb_heap *heap;
+
+    int dockerconfig_len;
+	char *dockerconfig;
 };
 
 struct flb_logformat_pod_info *flb_logformat_pod_info_create();
