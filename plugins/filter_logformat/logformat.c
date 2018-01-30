@@ -100,7 +100,7 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
 			new_map_size--;
 		} else if (k.type == MSGPACK_OBJECT_STR && strncmp(k.via.str.ptr, "log", 3) == 0 && regex != NULL && logformat_log_format != NULL) {
 			memcpy(log, source_map.via.map.ptr[i].val.via.str.ptr, source_map.via.map.ptr[i].val.via.str.size);
-			log[source_map.via.map.ptr[i].val.via.str.size - 1] = '\0';
+			log[source_map.via.map.ptr[i].val.via.str.size] = '\0';
 		}
 	}
 
