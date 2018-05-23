@@ -61,7 +61,7 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
     int map_size;
     int new_map_size = 0;
 
-    int logSize = 1024;
+    int logSize = 102400;
     int copySize = 0;
     char log[102400];
     msgpack_object k;
