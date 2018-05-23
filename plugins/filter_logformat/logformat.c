@@ -60,6 +60,9 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
     int len;
     int map_size;
     int new_map_size = 0;
+
+    int logSize = 1024;
+    int copySize = 0;
     char log[102400];
     msgpack_object k;
     msgpack_object v;
@@ -99,8 +102,13 @@ static int pack_map_content(msgpack_packer *pck, msgpack_sbuffer *sbuf,
 		} else if (k.type == MSGPACK_OBJECT_STR && strncmp(k.via.str.ptr, "time", 4) == 0) {
 			new_map_size--;
 		} else if (k.type == MSGPACK_OBJECT_STR && strncmp(k.via.str.ptr, "log", 3) == 0 && regex != NULL && logformat_log_format != NULL) {
-			memcpy(log, source_map.via.map.ptr[i].val.via.str.ptr, source_map.via.map.ptr[i].val.via.str.size);
-			log[source_map.via.map.ptr[i].val.via.str.size] = '\0';
+			if (logSize - 1 < source_map.via.map.ptr[i].val.via.str.size) {
+				copySize = logSize - 1;
+			} else {
+				copySize = source_map.via.map.ptr[i].val.via.str.size;
+			}
+			memcpy(log, source_map.via.map.ptr[i].val.via.str.ptr, copySize);
+			log[copySize] = '\0';
 		}
 	}
 
