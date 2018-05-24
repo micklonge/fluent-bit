@@ -343,83 +343,87 @@ static struct flb_logformat_pod_info * build_tag_index(char *tag, int tag_len, v
 
 		if((fp = fopen(configPath, "r")) == NULL) {
 			flb_error("%s fail to open", configPath);
-			flb_logformat_hash_item_destroy(ctx, hash_item);
-			return NULL;
-		}
+			//flb_logformat_hash_item_destroy(ctx, hash_item);
+			//return NULL;
 
-		while(fgets(buf, 10240, fp) != NULL) {
-			if (pConfigBuf == NULL) {
-				pConfigBuf = flb_calloc(1, configBufSize);
-				*pConfigBuf = '\0';
-			} else {
-				if (configBufSize < strlen(pConfigBuf) + strlen(buf)) {
-					configBufSize = strlen(pConfigBuf) + strlen(buf) + 10240;
-					pConfigBuf = flb_realloc(pConfigBuf, configBufSize);
-				}
-			}
-
-			strcat(pConfigBuf, buf);
-		}
-
-		if (fp != NULL) {
-			fclose(fp);
-		}
-
-		unescape_string(pConfigBuf, strlen(pConfigBuf));
-
-		//flb_info("config json:%s", pConfigBuf);
-		//flb_info("config size:%d\n", strlen(pConfigBuf));
-
-		if ((buf_ptr = strstr(pConfigBuf, "LOGPATTERN=")) != NULL) {
-			buf_ptr = buf_ptr + strlen("LOGPATTERN=");
-			buf_end = buf_ptr;
-			while (*buf_end != '\"') {
-				++buf_end;
-			}
-			*buf_end = '\0';
-
-			flb_info("tag: %s", tag);
-			flb_info("pattern: %s", buf_ptr);
-
-			hash_item->logformat_pod_info->regex = flb_logformat_regex_init_userdefined(buf_ptr);
-			*buf_end = '\"';
-		} else {
 			hash_item->logformat_pod_info->regex = NULL;
-		}
-
-		if ((buf_ptr = strstr(pConfigBuf, "LOGASSEMBLE=")) != NULL) {
-			buf_ptr = buf_ptr + strlen("LOGASSEMBLE=");
-			buf_end = buf_ptr;
-			while (*buf_end != '\"') {
-				++buf_end;
-			}
-			*buf_end = '\0';
-
-			flb_info("format: %s", buf_ptr);
-
-			hash_item->logformat_pod_info->logformat_log_format = flb_logformat_log_format_create(buf_ptr);
-			*buf_end = '\"';
-		} else {
 			hash_item->logformat_pod_info->logformat_log_format = NULL;
-		}
-
-		if ((buf_ptr = strstr(pConfigBuf, "GATEWAYTOKEN=")) != NULL) {
-			buf_ptr = buf_ptr + strlen("GATEWAYTOKEN=");
-			buf_end = buf_ptr;
-			while (*buf_end != '\"') {
-				++buf_end;
-			}
-			*buf_end = '\0';
-
-			flb_info("gatewaytoken: %s", buf_ptr);
-
-			hash_item->logformat_pod_info->token = flb_strdup(buf_ptr);
-			hash_item->logformat_pod_info->token_len = strlen(buf_ptr);
-		} else {
 			hash_item->logformat_pod_info->token = NULL;
-		}
+		} else {
+			while(fgets(buf, 10240, fp) != NULL) {
+				if (pConfigBuf == NULL) {
+					pConfigBuf = flb_calloc(1, configBufSize);
+					*pConfigBuf = '\0';
+				} else {
+					if (configBufSize < strlen(pConfigBuf) + strlen(buf)) {
+						configBufSize = strlen(pConfigBuf) + strlen(buf) + 10240;
+						pConfigBuf = flb_realloc(pConfigBuf, configBufSize);
+					}
+				}
 
-		flb_free(pConfigBuf);
+				strcat(pConfigBuf, buf);
+			}
+
+			if (fp != NULL) {
+				fclose(fp);
+			}
+
+			unescape_string(pConfigBuf, strlen(pConfigBuf));
+
+			//flb_info("config json:%s", pConfigBuf);
+			//flb_info("config size:%d\n", strlen(pConfigBuf));
+
+			if ((buf_ptr = strstr(pConfigBuf, "LOGPATTERN=")) != NULL) {
+				buf_ptr = buf_ptr + strlen("LOGPATTERN=");
+				buf_end = buf_ptr;
+				while (*buf_end != '\"') {
+					++buf_end;
+				}
+				*buf_end = '\0';
+
+				flb_info("tag: %s", tag);
+				flb_info("pattern: %s", buf_ptr);
+
+				hash_item->logformat_pod_info->regex = flb_logformat_regex_init_userdefined(buf_ptr);
+				*buf_end = '\"';
+			} else {
+				hash_item->logformat_pod_info->regex = NULL;
+			}
+
+			if ((buf_ptr = strstr(pConfigBuf, "LOGASSEMBLE=")) != NULL) {
+				buf_ptr = buf_ptr + strlen("LOGASSEMBLE=");
+				buf_end = buf_ptr;
+				while (*buf_end != '\"') {
+					++buf_end;
+				}
+				*buf_end = '\0';
+
+				flb_info("format: %s", buf_ptr);
+
+				hash_item->logformat_pod_info->logformat_log_format = flb_logformat_log_format_create(buf_ptr);
+				*buf_end = '\"';
+			} else {
+				hash_item->logformat_pod_info->logformat_log_format = NULL;
+			}
+
+			if ((buf_ptr = strstr(pConfigBuf, "GATEWAYTOKEN=")) != NULL) {
+				buf_ptr = buf_ptr + strlen("GATEWAYTOKEN=");
+				buf_end = buf_ptr;
+				while (*buf_end != '\"') {
+					++buf_end;
+				}
+				*buf_end = '\0';
+
+				flb_info("gatewaytoken: %s", buf_ptr);
+
+				hash_item->logformat_pod_info->token = flb_strdup(buf_ptr);
+				hash_item->logformat_pod_info->token_len = strlen(buf_ptr);
+			} else {
+				hash_item->logformat_pod_info->token = NULL;
+			}
+
+			flb_free(pConfigBuf);
+		}
 
 		ret = flb_hash_add(ctx->hashTable, logformat_tag->tag, strlen(logformat_tag->tag),
 						(char *)hash_item, sizeof(struct flb_logformat_hash_item));
